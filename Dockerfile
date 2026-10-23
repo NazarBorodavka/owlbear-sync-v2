@@ -28,6 +28,10 @@ RUN python -c "import cv2; print(f'[OK] cv2 version: {cv2.__version__}')" || \
 
 COPY tracker ./tracker
 COPY extension ./extension
+# Shipped so an operator can generate printable marker artwork and score
+# recorded footage on the deployment host itself:
+#   docker exec <container> python tools/generate_markers.py --outdir /data/markers
+COPY tools ./tools
 
 # A dedicated, mountable state directory. Without this the default would
 # be ./data relative to the package (/app/tracker/data), so bind-mounting

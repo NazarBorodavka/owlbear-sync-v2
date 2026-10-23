@@ -264,6 +264,24 @@ See [docs/VALIDATION.md](docs/VALIDATION.md) for what each test actually
 checks, the known-good numbers, and what still needs verifying on real
 hardware.
 
+### Scoring real footage
+
+Record the camera, then replay it through the production pipeline:
+
+```bash
+python tools/replay.py recording.mp4 --calibration data/calibration \
+    --expect-tokens 6 --annotate annotated.mp4
+```
+
+It needs no hand-labelling. The failures that matter are self-evident
+from the track log -- a track whose id changes mid-life, a track reported
+without ever decoding (v1's red ghosts), an id dropped and re-acquired,
+frame times over budget -- so it scores those directly and prints
+pass/fail per requirement. `--annotate` writes an overlaid video for
+eyeballing: green tracked, amber coasting, red phantom.
+
+docs/VALIDATION.md lists the clips worth recording.
+
 ## Status
 
 The vision pipeline, calibration, web app, extension and deployment are

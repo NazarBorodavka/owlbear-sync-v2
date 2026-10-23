@@ -23,6 +23,7 @@ python3 tests/test_codebook_frozen.py  # the printed-marker codebook cannot drif
 python3 tests/test_print_roundtrip.py  # the real printable SVG decodes (needs rsvg-convert)
 python3 tests/test_runtime.py          # frame processing, pipeline rebuild
 python3 tests/test_app.py              # web API surface
+python3 tests/test_replay.py           # the recorded-footage replay harness
 ```
 
 CI runs all of these before publishing an image, so a broken tracker
@@ -70,6 +71,15 @@ with the real detector and matcher. All 24 markers decode to their own
 id, at ten rotations including deliberately off-chip-grid angles. Skips
 itself if rsvg-convert is absent.
 
+**test_replay.py** -- tests the replay harness itself, because a harness
+bug pointed at real footage is indistinguishable from a tracker
+regression. Renders a 6-token sequence, encodes it to a real mp4 (codec
+compression included deliberately), replays it, and checks the harness
+reports what is genuinely in the recording. Separately feeds the scorer
+each failure mode one at a time to confirm it actually catches identity
+flips, phantoms, churn, slow frames and missing tokens -- a scorer only
+tested on passing input is half-tested.
+
 **test_calibration.py** -- lens calibration recovers known-true camera
 intrinsics to within 3% from synthetic chessboard captures; the play-area
 homography round-trips a known point to 0.04mm; all three calibration
@@ -98,6 +108,33 @@ decode, track or calibration.
    occluded; real lighting; real projector running) to replay through the
    same pipeline and compare against these synthetic numbers -- this
    project's standing commitment, not optional polish.
+
+   The harness for this exists and is tested: `tools/replay.py`. It needs
+   no ground truth, because the failures that actually matter are
+   self-evident from the track log -- a track whose id changes mid-life,
+   a track reported without ever decoding, an id dropped and re-acquired,
+   or frame times above the budget. See its docstring.
+
+   ```bash
+   python tools/replay.py recording.mp4 --calibration data/calibration \
+       --expect-tokens 6 --annotate annotated.mp4 --json report.json
+   ```
+
+   To record a useful corpus, with the projector running and the camera
+   in its final mounted position and settings:
+
+   | clip | what to do | what it tests |
+   |---|---|---|
+   | still | 6 tokens placed, untouched, ~30s | false positives, id stability at rest |
+   | slow | drag each token slowly across the area | steady-state tracking accuracy |
+   | fast | flick tokens quickly between spots | motion blur limit, the v1 flick failure |
+   | occluded | move tokens with a hand over them | identity survival across gaps |
+   | crossing | pass two tokens over each other | identity swaps |
+   | map change | switch projected maps while tokens sit still | projector interference |
+   | clutter | add dice, a mug, a d20 to the table | the peak-floor gate rejecting non-markers |
+
+   Run each clip through the harness and record the output here. A clip
+   that fails is more valuable than one that passes -- it is a test case.
 2. A real-ink check: print a marker, photograph it under forced IR/night
    mode, confirm the detection ring stays dark (see test_projector.py's
    docstring on pigment vs. dye black ink).
