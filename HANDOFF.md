@@ -201,14 +201,14 @@ frozen file** the decoder reads, so artwork and decoder cannot disagree.
 **`tests/test_print_roundtrip.py` is the test that would have caught
 v1's mirrored-print bug**: it rasterises the *actual* printable SVG with
 `rsvg-convert` (an external renderer, not our code) and decodes it with
-the real detector/matcher. All 24 markers decode to their own id, at 10
+the real detector/matcher. All 6 markers decode to their own id, at 10
 rotations including off-chip-grid angles.
 
 **`tests/test_codebook_frozen.py`** guards against drift: asserts the
 committed bytes are unchanged, still meet the correlation quality bar,
-separate every pair at every rotation exhaustively (276 pairs × 20
-rotations), and that the generator still reproduces the committed bytes
-exactly. Also guards a real bug (see §3.3) — the codebook must not live
+separate every pair at every rotation exhaustively (15 pairs × 20
+rotations), that no codeword is confusable with a lighting gradient,
+and that the generator still reproduces the committed bytes exactly. Also guards a real bug (see §3.3) — the codebook must not live
 under any mountable data directory.
 
 ### 3.3 The codebook's location was a real deployment bug (fixed)

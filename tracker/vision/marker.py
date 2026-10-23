@@ -54,29 +54,47 @@ def marker_svg(codeword, geom, marker_id, label=True, bleed_mm=2.0):
     return "\n".join(parts)
 
 
-def sheet_svg(codebook, geom, cols=4, margin_mm=6.0, pitch_extra_mm=4.0):
+def sheet_svg(codebook, geom, cols=4, margin_mm=6.0, pitch_extra_mm=4.0,
+              page_mm=None):
     """A full printable sheet of all markers, with a 50mm scale bar.
 
     The scale bar exists so a mis-scaled print is caught immediately: if
     it does not measure 50mm with a ruler, the markers are the wrong size
     and every position the tracker reports will be wrong by that factor.
+
+    page_mm, as (width, height), pins the sheet to a fixed paper size --
+    (210, 297) for A4 -- and centres the grid on it. Without it the sheet
+    is sized to its contents, which prints fine but leaves the page
+    scaling up to the print dialog, and "fit to page" on an oddly-sized
+    sheet is exactly how a mis-scaled print happens.
     """
     pitch = geom.base_d_mm + pitch_extra_mm
     n = len(codebook)
+    cols = max(1, min(cols, n))
     rows = (n + cols - 1) // cols
-    w = margin_mm * 2 + cols * pitch
-    h = margin_mm * 2 + rows * pitch + 12
+    if page_mm is None:
+        w = margin_mm * 2 + cols * pitch
+        h = margin_mm * 2 + rows * pitch + 12
+        origin_x = margin_mm
+    else:
+        w, h = float(page_mm[0]), float(page_mm[1])
+        if cols * pitch > w - 2 * margin_mm or rows * pitch > h - 2 * margin_mm - 12:
+            raise ValueError(
+                f"{n} markers at {pitch:.1f}mm pitch in {cols} columns do not "
+                f"fit on a {w:.0f}x{h:.0f}mm page with {margin_mm:.0f}mm "
+                f"margins; reduce cols, pitch_extra_mm or marker count")
+        origin_x = (w - cols * pitch) / 2.0
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}mm" '
              f'height="{h}mm" viewBox="0 0 {w} {h}">',
              f'<rect width="{w}" height="{h}" fill="white"/>']
     for i, cw in enumerate(codebook):
         r, c_ = divmod(i, cols)
-        ox = margin_mm + c_ * pitch + pitch / 2
+        ox = origin_x + c_ * pitch + pitch / 2
         oy = margin_mm + r * pitch + pitch / 2
         parts.append(f'<g transform="translate({ox:.3f},{oy:.3f})">')
         parts.append(_marker_body(cw, geom, i))
         parts.append('</g>')
-    by = h - 7
+    by = h - margin_mm - 6 if page_mm is not None else h - 7
     parts.append(f'<rect x="{margin_mm}" y="{by}" width="50" height="1.2" fill="black"/>')
     parts.append(f'<text x="{margin_mm}" y="{by + 5:.2f}" font-family="sans-serif" '
                  f'font-size="3" fill="black">50mm &#8212; measure this; if it is not '

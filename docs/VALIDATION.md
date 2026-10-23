@@ -67,7 +67,7 @@ bind mount for persistence shadowed it and killed startup.
 print run through. Every other test renders markers with a numpy
 reimplementation of the artwork; this one rasterises the actual printable
 SVG with an external renderer (rsvg-convert, not our code) and decodes it
-with the real detector and matcher. All 24 markers decode to their own
+with the real detector and matcher. All 6 markers decode to their own
 id, at ten rotations including deliberately off-chip-grid angles. Skips
 itself if rsvg-convert is absent.
 

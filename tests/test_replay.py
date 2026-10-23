@@ -26,7 +26,7 @@ from tracker.vision.codebook import load_codebook
 from tracker.vision.geometry import RingGeometry
 
 GEOM = RingGeometry()
-CB = load_codebook(n_ids=8)
+CB = load_codebook(n_ids=6)
 PX_MM = 3.5
 N_TOKENS = 6          # the stated requirement: 6 active tokens
 N_FRAMES = 90
@@ -83,7 +83,7 @@ def test_replay_scores_a_known_recording():
         caldir = os.path.join(d, "calibration")
         _write_sequence(video, caldir)
 
-        r = replay(video, caldir, n_ids=8, progress=False)
+        r = replay(video, caldir, n_ids=6, progress=False)
 
         assert r["frames"] >= N_FRAMES - 2, \
             f"harness read {r['frames']} of {N_FRAMES} frames"
@@ -129,7 +129,7 @@ def test_replay_refuses_without_a_play_area():
         _write_sequence(video, os.path.join(d, "real_cal"))
         os.makedirs(caldir, exist_ok=True)   # present but empty
         try:
-            replay(video, caldir, n_ids=8, progress=False)
+            replay(video, caldir, n_ids=6, progress=False)
         except SystemExit as e:
             assert "play-area" in str(e), e
         else:
@@ -150,7 +150,7 @@ def test_annotated_output_is_written():
         caldir = os.path.join(d, "calibration")
         out = os.path.join(d, "annotated.mp4")
         _write_sequence(video, caldir)
-        replay(video, caldir, n_ids=8, limit=20, annotate=out, progress=False)
+        replay(video, caldir, n_ids=6, limit=20, annotate=out, progress=False)
         assert os.path.exists(out) and os.path.getsize(out) > 0
         print(f"  annotated overlay written ({os.path.getsize(out)} bytes)")
     finally:

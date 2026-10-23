@@ -8,21 +8,51 @@ rotation on the table is arbitrary, that is exactly where confusions come
 from. v1 then needed a separate sync word to pin down rotation, which
 became its own brittle failure mode.
 
-Here the objective is the quantity the matched filter actually measures:
+The objective here is the quantity the matched filter actually measures:
 the worst-case periodic cross-correlation between any two codewords at
-ANY relative rotation, and the worst out-of-phase autocorrelation sidelobe
-of each codeword. Optimising that directly removes the need for a sync
-word at all -- rotation falls out of the correlation peak.
+ANY relative rotation. Optimising that directly removes the need for a
+sync word at all -- rotation falls out of the correlation peak.
+
+Two corrections to that objective, both found by measurement and both
+load-bearing:
+
+SIGNED, NOT ABSOLUTE. The first version of this module scored pairs on
+|correlation|. The decoder does not: it takes cc.max() per codeword and
+compares those peaks, so a strongly ANTI-correlated pair is not
+confusable -- a correlation of -0.6 means "definitely not this one".
+Scoring on magnitude needlessly discarded half the design space and
+capped the achievable separation at 4 chips out of 20. On the signed
+metric the same 20-chip ring supports 8.
+
+SPECTRALLY CONSTRAINED. Maximising separation ALONE produces degenerate
+codewords. The single most separable 20-chip marker is ten black chips
+followed by ten white ones -- and that is a brightness ramp, which is
+also what a lighting gradient, a shadow edge or vignetting looks like.
+Measured: a BLANK ring under a mild gradient correlated 0.822 with such a
+codeword and decoded as a confident token. The mirror failure is a
+near-alternating codeword, whose signal lives entirely at the chip scale
+and is the first thing defocus destroys. So candidates are filtered on
+their angular power spectrum before separation is considered at all.
+
+The search is exhaustive and deterministic: it enumerates every balanced
+necklace of the given length, so there is no RNG whose implementation
+could drift across numpy versions and silently desync the decoder from
+markers already printed. That drift risk was the original reason the
+codebook had to be frozen to a committed file; the file is still frozen,
+but the generator behind it no longer depends on random sampling.
 """
+import itertools
+
 import numpy as np
 
 
-def periodic_xcorr_max(a, b, exclude_zero_shift=None):
-    """Max |circular cross-correlation| of two +/-1 sequences, normalised.
+def periodic_xcorr_peak(a, b, exclude_zero_shift=None):
+    """Max circular cross-correlation of two +/-1 sequences, normalised.
 
-    When a and b are the same sequence this excludes zero shift, so the
-    result is the worst autocorrelation SIDELOBE -- the thing that decides
-    whether a codeword can be confused with a rotation of itself.
+    SIGNED, matching what the decoder compares. When a and b are the same
+    sequence this excludes zero shift, so the result is the worst
+    autocorrelation SIDELOBE -- the thing that decides whether a codeword
+    can be confused with a rotation of itself.
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -32,64 +62,134 @@ def periodic_xcorr_max(a, b, exclude_zero_shift=None):
     cc = np.fft.irfft(np.fft.rfft(a) * np.conj(np.fft.rfft(b)), n) / n
     if exclude_zero_shift:
         cc = cc.copy()
-        cc[0] = 0.0
-    return float(np.max(np.abs(cc)))
+        cc[0] = -np.inf
+    return float(cc.max())
 
 
-def _canonical(v):
-    return min(tuple(np.roll(v, k)) for k in range(len(v)))
+def spectral_profile(c):
+    """(low, top, peak) fractions of a codeword's angular power spectrum.
 
+    low  -- harmonics 1 and 2, the shading subspace. A brightness ramp
+            across the token is harmonic 1 almost exactly, so a codeword
+            with energy here is confusable with illumination itself
+            rather than with ink.
+    top  -- the Nyquist harmonic, i.e. chip-scale alternation. This is
+            what defocus and low px/mm attenuate first.
+    peak -- the largest single harmonic. Bounding it keeps a codeword's
+            signal spread across the band, so no single narrowband
+            disturbance can take all of it at once.
 
-def build_codebook(n_chips=20, n_ids=8, seed=1, max_attempts=12000,
-                   auto_thr=0.45, cross_thr=0.40):
-    """Greedy search for n_ids balanced binary cyclic sequences.
-
-    Balanced (equal black and white chips) is a hard requirement, not a
-    preference: it makes the unwrapped strip zero-mean, so the correlation
-    is immune to any overall brightness offset. Most of what "variable
-    lighting" does to a patch this small is exactly such an offset.
+    DC is excluded: balanced codewords have none, which is what makes the
+    decode immune to a flat brightness offset.
     """
-    if n_chips % 2:
-        raise ValueError("n_chips must be even so codewords can be balanced")
-    rng = np.random.default_rng(seed)
-    pool, seen = [], set()
-    for _ in range(max_attempts):
-        v = np.ones(n_chips, dtype=np.int8)
-        v[rng.choice(n_chips, n_chips // 2, replace=False)] = -1
-        canon = _canonical(v)
-        if canon in seen:
-            continue
-        seen.add(canon)
-        arr = np.array(canon, dtype=np.float64)
-        if periodic_xcorr_max(arr, arr) <= auto_thr:
-            pool.append(arr)
-    if not pool:
-        raise ValueError(f"no usable sequences at n_chips={n_chips}")
+    c = np.asarray(c, dtype=np.float64)
+    n = len(c)
+    p = np.abs(np.fft.rfft(c))[1:n // 2 + 1] ** 2
+    p = p / p.sum()
+    return float(p[0] + p[1]), float(p[-1]), float(p.max())
 
-    chosen = [pool[0]]
-    thr = cross_thr
-    while len(chosen) < n_ids and thr <= 1.0:
-        for cand in pool:
-            if len(chosen) >= n_ids:
-                break
-            if any(np.array_equal(cand, c) for c in chosen):
-                continue
-            if max(periodic_xcorr_max(cand, c) for c in chosen) <= thr:
-                chosen.append(cand)
-        thr += 0.05
-    if len(chosen) < n_ids:
-        raise ValueError(f"only found {len(chosen)}/{n_ids} codewords "
-                         f"at n_chips={n_chips}")
-    return np.array(chosen[:n_ids])
+
+def balanced_necklaces(n):
+    """Every balanced +/-1 sequence of length n, one per rotation class.
+
+    All rotations of a sequence are the SAME physical marker -- the
+    marker's orientation on the table is arbitrary -- so only one
+    representative of each rotation class is a distinct design. Returned
+    in sorted order, which is what makes the search deterministic.
+    """
+    if n % 2:
+        raise ValueError("n_chips must be even so codewords can be balanced")
+    seen = set()
+    for ones in itertools.combinations(range(n), n // 2):
+        v = [-1] * n
+        for i in ones:
+            v[i] = 1
+        seen.add(min(tuple(v[k:] + v[:k]) for k in range(n)))
+    return np.array(sorted(seen), dtype=np.float64)
+
+
+def build_codebook(n_chips=20, n_ids=6, max_cross=0.20, low_cap=0.35,
+                   top_cap=0.30, harm_cap=0.60, auto_cap=0.60):
+    """Exhaustive deterministic search for n_ids codewords.
+
+    Candidates are first filtered on the physical constraints (balance is
+    structural, the rest spectral), then a depth-first search finds the
+    lexicographically first set whose every pair stays below max_cross at
+    every relative rotation.
+
+    max_cross is the design's headline property: 0.20 at 20 chips means
+    no two markers come within 8 chips of each other under any rotation.
+    It is a target, not an optimum discovered at runtime -- the optimum
+    was established offline by searching every achievable separation
+    level, and baking the resulting value in keeps generation fast and
+    its output stable.
+
+    Raises if no such set exists, rather than quietly returning fewer
+    codewords than asked for.
+    """
+    pool = balanced_necklaces(n_chips)
+    # Same quantities as spectral_profile() and periodic_xcorr_peak(), but
+    # over the whole pool at once -- the per-candidate versions are clearer
+    # to read and are what the tests check against, while this keeps
+    # regeneration to a couple of seconds instead of half a minute.
+    spec = np.fft.rfft(pool, axis=1)
+    power = np.abs(spec[:, 1:n_chips // 2 + 1]) ** 2
+    power = power / power.sum(axis=1, keepdims=True)
+    low = power[:, 0] + power[:, 1]
+    top = power[:, -1]
+    harm = power.max(axis=1)
+    auto = (np.fft.irfft(spec * np.conj(spec), n_chips, axis=1)
+            / n_chips)[:, 1:].max(axis=1)
+    keep = np.flatnonzero((low <= low_cap + 1e-9) & (top <= top_cap + 1e-9)
+                          & (harm <= harm_cap + 1e-9)
+                          & (auto <= auto_cap + 1e-9))
+    sub = pool[keep]
+    if len(sub) < n_ids:
+        raise ValueError(
+            f"only {len(sub)} of {len(pool)} {n_chips}-chip markers survive the "
+            f"spectral constraints; cannot pick {n_ids}")
+
+    # Adjacency as bitmasks: bit j of adj[i] means i and j can coexist.
+    spectrum = spec[keep]
+    adj = []
+    for i in range(len(sub)):
+        cc = np.fft.irfft(spectrum[i][None, :] * np.conj(spectrum),
+                          n_chips, axis=1) / n_chips
+        ok = cc.max(axis=1) <= max_cross + 1e-9
+        ok[i] = False
+        adj.append(int.from_bytes(np.packbits(ok, bitorder="little").tobytes(),
+                                  "little"))
+
+    def extend(chosen, candidates):
+        if len(chosen) == n_ids:
+            return chosen
+        if len(chosen) + int(bin(candidates).count("1")) < n_ids:
+            return None
+        rest = candidates
+        while rest:
+            lowbit = rest & -rest
+            v = lowbit.bit_length() - 1
+            rest ^= lowbit
+            got = extend(chosen + [v], rest & adj[v])
+            if got:
+                return got
+        return None
+
+    sol = extend([], (1 << len(sub)) - 1)
+    if sol is None:
+        raise ValueError(
+            f"no {n_ids} markers of {n_chips} chips stay below "
+            f"max_cross={max_cross} pairwise; loosen it or add chips")
+    return sub[sol]
 
 
 def quality(cb):
     """(worst autocorrelation sidelobe, worst pairwise cross-correlation)."""
-    worst_auto = max(periodic_xcorr_max(c, c) for c in cb)
-    worst_cross = 0.0
+    worst_auto = max(periodic_xcorr_peak(c, c, True) for c in cb)
+    worst_cross = -1.0
     for i in range(len(cb)):
         for j in range(i + 1, len(cb)):
-            worst_cross = max(worst_cross, periodic_xcorr_max(cb[i], cb[j]))
+            worst_cross = max(worst_cross, periodic_xcorr_peak(cb[i], cb[j]))
     return worst_auto, worst_cross
 
 

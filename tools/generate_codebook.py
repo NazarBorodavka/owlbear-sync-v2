@@ -20,9 +20,22 @@ from tracker.vision.codebook import build_codebook, quality, to_bits
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n-chips", type=int, default=20)
-    ap.add_argument("--n-ids", type=int, default=24)
-    ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--max-attempts", type=int, default=12000)
+    ap.add_argument("--n-ids", type=int, default=6)
+    ap.add_argument("--max-cross", type=float, default=0.20,
+                    help="worst allowed signed cross-correlation between any "
+                         "two markers at any rotation; 0.20 at 20 chips means "
+                         "no two markers come within 8 chips of each other")
+    ap.add_argument("--low-cap", type=float, default=0.35,
+                    help="max share of angular power in harmonics 1-2, the "
+                         "shading subspace a lighting gradient lives in")
+    ap.add_argument("--top-cap", type=float, default=0.30,
+                    help="max share in the Nyquist harmonic, which defocus "
+                         "attenuates first")
+    ap.add_argument("--harm-cap", type=float, default=0.60,
+                    help="max share in any single harmonic")
+    ap.add_argument("--auto-cap", type=float, default=0.60,
+                    help="max autocorrelation sidelobe, so no marker is "
+                         "confusable with a rotation of itself")
     ap.add_argument("--out", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "..", "tracker", "vision",
         "codebook_data.json"))
@@ -37,14 +50,16 @@ def main():
             print("Aborted.")
             return 1
 
-    cb = build_codebook(args.n_chips, args.n_ids, seed=args.seed,
-                        max_attempts=args.max_attempts)
+    cb = build_codebook(args.n_chips, args.n_ids, max_cross=args.max_cross,
+                        low_cap=args.low_cap, top_cap=args.top_cap,
+                        harm_cap=args.harm_cap, auto_cap=args.auto_cap)
     auto, cross = quality(cb)
     payload = {
         "n_chips": args.n_chips,
         "n_ids": args.n_ids,
-        "generated_with": {"seed": args.seed, "max_attempts": args.max_attempts,
-                           "auto_thr": 0.45, "cross_thr": 0.40},
+        "generated_with": {"max_cross": args.max_cross, "low_cap": args.low_cap,
+                           "top_cap": args.top_cap, "harm_cap": args.harm_cap,
+                           "auto_cap": args.auto_cap},
         "worst_autocorrelation_sidelobe": round(auto, 6),
         "worst_pairwise_crosscorrelation": round(cross, 6),
         "codewords": to_bits(cb),

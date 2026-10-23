@@ -20,7 +20,7 @@ from tracker.vision.calibration.store import CalibrationStore
 from tracker.vision.calibration.session import CalibrationSession
 
 GEOM = RingGeometry()
-CB = load_codebook(n_ids=8)
+CB = load_codebook(n_ids=6)
 TEST_DIR = "/tmp/v2_calibration_test"
 
 

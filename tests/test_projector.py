@@ -28,7 +28,7 @@ from tracker.vision import simulate as sim
 
 PX_MM = 3.2
 GEOM = RingGeometry()
-CB = load_codebook(n_ids=8)
+CB = load_codebook(n_ids=6)
 
 
 def trial(rng, projector_kw, monochrome, px_mm=PX_MM, force_grid_center=False):

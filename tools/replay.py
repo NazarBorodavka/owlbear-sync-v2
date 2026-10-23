@@ -62,7 +62,7 @@ def _open(path):
     return cap, fps, n
 
 
-def replay(video, calibration_dir, n_ids=24, limit=None, annotate=None,
+def replay(video, calibration_dir, n_ids=6, limit=None, annotate=None,
            rescan_hz=3.0, progress=True):
     import cv2
 
@@ -268,7 +268,7 @@ def main():
     ap.add_argument("video")
     ap.add_argument("--calibration", required=True,
                     help="calibration directory (e.g. data/calibration)")
-    ap.add_argument("--n-ids", type=int, default=24)
+    ap.add_argument("--n-ids", type=int, default=6)
     ap.add_argument("--limit", type=int, default=None,
                     help="stop after N frames")
     ap.add_argument("--annotate", default=None,

@@ -20,7 +20,8 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from tracker.vision.codebook import (codebook_metadata, load_codebook,
-                                     periodic_xcorr_max, quality)
+                                     periodic_xcorr_peak, spectral_profile,
+                                     quality)
 from tracker.vision.decode import MIN_MARGIN, MIN_PEAK
 
 # The fingerprint of the codebook the markers were printed from. If this
@@ -28,9 +29,18 @@ from tracker.vision.decode import MIN_MARGIN, MIN_PEAK
 # ALL markers need reprinting and this constant needs updating), or the
 # data file was corrupted.
 EXPECTED_N_CHIPS = 20
-EXPECTED_N_IDS = 24
-EXPECTED_WORST_AUTO = 0.40
-EXPECTED_WORST_CROSS = 0.60
+EXPECTED_N_IDS = 6
+EXPECTED_WORST_AUTO = 0.60
+EXPECTED_WORST_CROSS = 0.20
+
+# Energy a codeword may put in harmonics 1-2 (the shading subspace) and in
+# any single harmonic. These are not cosmetic: optimising separation with
+# no spectral constraint picks ten-black-then-ten-white, which IS a
+# brightness ramp. A blank ring under a mild lighting gradient was
+# measured correlating 0.822 with such a codeword and decoding as a
+# confident token.
+MAX_LOW_FREQ_ENERGY = 0.35
+MAX_SINGLE_HARMONIC = 0.60
 
 
 def test_frozen_codebook_shape_is_unchanged():
@@ -72,7 +82,7 @@ def test_frozen_codebook_meets_correlation_quality_bar():
 def test_frozen_codebook_separates_every_pair_at_every_rotation():
     """Exhaustive check of the property the decoder actually depends on.
 
-    quality() reports the worst case; this walks all 276 pairs x 20
+    quality() reports the worst case; this walks all 15 pairs x 20
     rotations to confirm nothing individually violates the peak/margin
     gates. This is the property that makes a confident WRONG id
     impossible rather than merely unlikely.
@@ -81,7 +91,7 @@ def test_frozen_codebook_separates_every_pair_at_every_rotation():
     n_ids, n_chips = cb.shape
     for i in range(n_ids):
         for j in range(i + 1, n_ids):
-            xc = periodic_xcorr_max(cb[i], cb[j])
+            xc = periodic_xcorr_peak(cb[i], cb[j])
             assert xc <= EXPECTED_WORST_CROSS + 1e-9, (
                 f"ids {i},{j} correlate at {xc:.3f} under some rotation -- "
                 f"they could be confused for each other")
@@ -98,24 +108,54 @@ def test_frozen_codebook_separates_every_pair_at_every_rotation():
 def test_regenerating_reproduces_the_committed_codebook():
     """The generator must still produce exactly what is committed.
 
-    This is the drift tripwire. If numpy's RNG changes across versions, or
-    build_codebook's search is refactored, this fails -- telling us the
-    generator and the printed artwork have parted ways BEFORE anyone
-    reprints markers from a generator that no longer agrees with the
-    decoder.
+    This is the drift tripwire. If build_codebook's search is refactored,
+    this fails -- telling us the generator and the printed artwork have
+    parted ways BEFORE anyone reprints markers from a generator that no
+    longer agrees with the decoder.
+
+    The search is exhaustive and deterministic, so unlike the original
+    random one this no longer depends on numpy's RNG staying stable
+    across versions -- which was itself a live drift risk.
     """
     from tracker.vision.codebook import build_codebook, to_bits
     meta = codebook_metadata()
     gen = meta["generated_with"]
     rebuilt = build_codebook(meta["n_chips"], meta["n_ids"],
-                             seed=gen["seed"],
-                             max_attempts=gen["max_attempts"],
-                             auto_thr=gen["auto_thr"],
-                             cross_thr=gen["cross_thr"])
+                             max_cross=gen["max_cross"],
+                             low_cap=gen["low_cap"], top_cap=gen["top_cap"],
+                             harm_cap=gen["harm_cap"],
+                             auto_cap=gen["auto_cap"])
     assert to_bits(rebuilt) == meta["codewords"], (
         "build_codebook no longer reproduces the committed codebook. The "
         "PRINTED markers follow the committed file, so do NOT regenerate "
         "to make this pass -- investigate what changed in the generator.")
+
+
+def test_frozen_codebook_cannot_be_confused_with_illumination():
+    """No codeword may look like a lighting gradient.
+
+    Harmonics 1-2 are the shading subspace: a brightness ramp across a
+    token is harmonic 1 almost exactly, and that is what a projector
+    edge, a shadow or vignetting puts on the marker. A codeword with its
+    energy there is competing with illumination rather than with other
+    markers.
+
+    This guards a failure that a pure separation search walks straight
+    into: the MOST separable 20-chip codeword is ten black chips then ten
+    white ones, and a BLANK ring under a mild gradient was measured
+    scoring 0.822 against it -- a confident id for an object with no code
+    on it at all. Bounding the largest single harmonic too keeps a
+    codeword's signal spread across the band, so no one narrowband
+    disturbance can take all of it.
+    """
+    cb = load_codebook()
+    for i, c in enumerate(cb):
+        low, top, peak = spectral_profile(c)
+        assert low <= MAX_LOW_FREQ_ENERGY + 1e-9, (
+            f"id {i} puts {low:.2f} of its energy in harmonics 1-2; it is "
+            f"confusable with a lighting gradient")
+        assert peak <= MAX_SINGLE_HARMONIC + 1e-9, (
+            f"id {i} concentrates {peak:.2f} of its energy in one harmonic")
 
 
 def test_loading_is_fast_enough_for_container_startup():
@@ -188,14 +228,18 @@ def test_codebook_does_not_live_in_a_mountable_data_directory():
 
 if __name__ == "__main__":
     test_frozen_codebook_shape_is_unchanged()
-    print("  shape unchanged: 24 codewords x 20 chips")
+    print(f"  shape unchanged: {EXPECTED_N_IDS} codewords x "
+          f"{EXPECTED_N_CHIPS} chips")
     test_frozen_codebook_is_bipolar_and_balanced()
     print("  all codewords bipolar and exactly zero-mean")
     test_frozen_codebook_meets_correlation_quality_bar()
     print(f"  quality bar met: worst auto={EXPECTED_WORST_AUTO}, "
           f"cross={EXPECTED_WORST_CROSS}")
     test_frozen_codebook_separates_every_pair_at_every_rotation()
-    print("  all 276 pairs separated at all 20 rotations")
+    n_pairs = EXPECTED_N_IDS * (EXPECTED_N_IDS - 1) // 2
+    print(f"  all {n_pairs} pairs separated at all {EXPECTED_N_CHIPS} rotations")
+    test_frozen_codebook_cannot_be_confused_with_illumination()
+    print("  no codeword is confusable with a lighting gradient")
     test_regenerating_reproduces_the_committed_codebook()
     print("  generator still reproduces the committed codebook bit-for-bit")
     test_loading_is_fast_enough_for_container_startup()

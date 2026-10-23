@@ -21,7 +21,7 @@ TEST_DIR = "/tmp/v2_runtime_test"
 
 def test_process_frame_reports_tokens_with_correct_mm_positions():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
-    rt = TrackerRuntime(TEST_DIR, n_ids=8)
+    rt = TrackerRuntime(TEST_DIR, n_ids=6)
     px_mm = 3.5
     width_mm, height_mm = 257.0, 143.0   # matches a 900x500px raw frame at this scale
     corners = np.array([[0, 0], [900, 0], [900, 500], [0, 500]], dtype=np.float64)
@@ -56,7 +56,7 @@ def test_process_frame_handles_bgr_input_like_a_real_camera():
     module tests with elsewhere -- verifies the 3-channel path actually
     works, not just that it does not crash."""
     shutil.rmtree(TEST_DIR, ignore_errors=True)
-    rt = TrackerRuntime(TEST_DIR, n_ids=8)
+    rt = TrackerRuntime(TEST_DIR, n_ids=6)
     px_mm = 3.5
     corners = np.array([[0, 0], [900, 0], [900, 500], [0, 500]], dtype=np.float64)
     rt.session.calibrate_playarea(corners, 257.0, 143.0, px_mm, already_undistorted=True)
@@ -75,7 +75,7 @@ def test_process_frame_handles_bgr_input_like_a_real_camera():
 
 def test_process_frame_before_calibration_fails_clearly():
     shutil.rmtree(TEST_DIR, ignore_errors=True)
-    rt = TrackerRuntime(TEST_DIR, n_ids=8)
+    rt = TrackerRuntime(TEST_DIR, n_ids=6)
     try:
         rt.prepare_pipeline()
         assert False, "should have raised -- no play-area calibration exists"

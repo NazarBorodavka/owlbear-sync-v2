@@ -37,7 +37,7 @@ def _bgr_to_gray(bgr):
 
 
 class TrackerRuntime:
-    def __init__(self, calibration_dir, n_ids=24, n_chips=20,
+    def __init__(self, calibration_dir, n_ids=6, n_chips=20,
                  target_fps=15.0, rescan_hz=3.0):
         self.geom = RingGeometry(n_chips=n_chips)
         self.geom.validate()

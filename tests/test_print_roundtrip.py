@@ -144,7 +144,7 @@ def test_printed_artwork_decodes_at_arbitrary_rotation():
     # since a half-chip offset is the worst case for the filter.
     angles = [0, 7, 9, 18, 45, 90, 137, 180, 263, 351]
     bad = []
-    for i in (0, 5, 11, 17, 23):
+    for i in range(len(codebook)):
         img = _rasterise(marker_svg(codebook[i], geom, i, label=False), PX_PER_MM)
         for a in angles:
             h, w = img.shape
@@ -161,7 +161,7 @@ def test_printed_artwork_decodes_at_arbitrary_rotation():
 
     assert not bad, f"printed artwork failed at rotation: {bad}"
     print(f"  printed artwork decodes correctly at all "
-          f"{len(angles)} rotations x 5 ids")
+          f"{len(angles)} rotations x {len(codebook)} ids")
 
 
 if __name__ == "__main__":

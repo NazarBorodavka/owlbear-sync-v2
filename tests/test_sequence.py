@@ -23,7 +23,7 @@ from tracker.vision import simulate as sim
 
 PX_MM = 3.2
 GEOM = RingGeometry()
-CB = load_codebook(n_ids=8)
+CB = load_codebook(n_ids=6)
 W, H = 900, 640
 FPS = 15.0
 

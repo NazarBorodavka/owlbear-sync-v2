@@ -129,7 +129,7 @@ curl http://<zima-ip>:5001/api/version
 ```
 
 You should get the build version, commit, and the codebook fingerprint
-(`n_chips: 20`, `n_ids: 24`). That last part is the useful bit: it
+(`n_chips: 20`, `n_ids: 6`). That last part is the useful bit: it
 confirms the running image carries the same codebook your markers were
 printed from.
 
