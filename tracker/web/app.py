@@ -264,6 +264,41 @@ def _register_routes(app):
         return jsonify({"ok": True})
 
     # -----------------------------------------------------------------
+    # Grid measurement (auto-zoom support)
+    # -----------------------------------------------------------------
+    @app.route("/api/grid/measure", methods=["POST"])
+    @auth.login_required
+    def measure_grid():
+        """Measures the real-world mm/cell of whatever grid is currently
+        visible in the camera feed -- the operator turns on Owlbear
+        Rodeo's grid overlay first, the ceiling projector displays it on
+        the table, and this is what makes "automatic map zooming" actually
+        automatic: the extension compares this measurement to the known
+        token base size and computes the exact OBR viewport zoom needed,
+        no manual trial-and-error required. See tracker/vision/grid.py.
+        """
+        from ..vision.grid import measure_grid_spacing_mm
+        if app.runtime.capture is None:
+            return jsonify({"error": "camera is not connected"}), 400
+        if app.runtime.session.playarea is None:
+            return jsonify({"error": "play-area is not calibrated"}), 400
+
+        ok, raw = app.runtime.capture.read()
+        if not ok or raw is None:
+            return jsonify({"error": "no frame available from camera"}), 400
+        gray = raw if raw.ndim == 2 else _bgr_to_gray(raw)
+        try:
+            rectified = app.runtime.session.rectify(gray)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
+
+        result = measure_grid_spacing_mm(rectified, app.runtime.session.playarea.px_per_mm)
+        if result is None:
+            return jsonify({"error": "no grid pattern found -- make sure Owlbear "
+                           "Rodeo's grid overlay is turned on and visible on the table"}), 404
+        return jsonify(result)
+
+    # -----------------------------------------------------------------
     # Camera lifecycle
     # -----------------------------------------------------------------
     @app.route("/api/camera/start", methods=["POST"])

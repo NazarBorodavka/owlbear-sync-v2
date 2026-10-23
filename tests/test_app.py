@@ -108,6 +108,40 @@ def test_calibration_status_reflects_each_stage_independently():
     print("  calibration status correctly reflects each stage independently")
 
 
+def test_grid_measure_endpoint_with_injected_camera():
+    """No real RTSP connection needed -- a minimal fake capture object
+    with the same read() contract as RtspCapture is enough to exercise
+    the grid-measurement endpoint end-to-end."""
+    import numpy as np
+    app = _fresh_app()
+    client = app.test_client()
+    auth = ("admin", "admin")
+
+    px_mm = 3.5
+    client.post("/api/calibration/playarea", auth=auth, json={
+        "corners": [[0, 0], [1400, 0], [1400, 900], [0, 900]],
+        "width_mm": 400, "height_mm": 257, "px_per_mm": px_mm})
+    app.runtime.prepare_pipeline()
+
+    from tests.test_grid import render_grid
+    true_mm = 50.0
+    gray = render_grid(true_mm, px_mm, (900, 1400))
+    bgr = np.stack([gray * 255] * 3, axis=-1).astype(np.uint8)
+
+    class FakeCapture:
+        def read(self):
+            return True, bgr
+    app.runtime.capture = FakeCapture()
+
+    r = client.post("/api/grid/measure", auth=auth)
+    assert r.status_code == 200, r.get_json()
+    data = r.get_json()
+    err_pct = 100 * abs(data["mm_per_cell"] - true_mm) / true_mm
+    assert err_pct < 2.0, data
+    print(f"  /api/grid/measure correctly measures {data['mm_per_cell']:.1f}mm/cell "
+          f"(true {true_mm}mm) via an injected fake camera, no RTSP needed")
+
+
 def test_camera_start_requires_playarea_calibration_first():
     app = _fresh_app()
     client = app.test_client()
@@ -127,5 +161,6 @@ if __name__ == "__main__":
     test_playarea_calibration_available_immediately()
     test_playarea_preview_does_not_persist()
     test_calibration_status_reflects_each_stage_independently()
+    test_grid_measure_endpoint_with_injected_camera()
     test_camera_start_requires_playarea_calibration_first()
     print("\nall app tests passed")
