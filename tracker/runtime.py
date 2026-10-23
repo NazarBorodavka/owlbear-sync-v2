@@ -53,7 +53,6 @@ class TrackerRuntime:
         self._running = False
         self._lock = threading.Lock()
         self._latest_tokens = []
-        self._latest_frame_mm_size = None
         self._stats = {"fps": 0.0, "frames": 0, "last_frame_time": 0.0,
                        "connected": False, "error": None}
 
@@ -162,18 +161,23 @@ class TrackerRuntime:
 
         with self._lock:
             self._latest_tokens = tokens
-            self._latest_frame_mm_size = (self.session.playarea.width_mm,
-                                          self.session.playarea.height_mm)
             self._stats["error"] = None
             self._stats["last_frame_time"] = now
         return True
 
     # ---- consumer-facing API -------------------------------------------------
     def latest(self):
+        # play_area_mm reflects the CURRENT calibration, not "size of the
+        # last processed frame" -- it needs to be available to API
+        # consumers (the Owlbear Rodeo extension's auto-zoom, in
+        # particular) as soon as play-area calibration exists, not only
+        # after the camera has started and produced a first frame.
+        play_area_mm = ((self.session.playarea.width_mm, self.session.playarea.height_mm)
+                        if self.session.playarea is not None else None)
         with self._lock:
             return {
                 "tokens": list(self._latest_tokens),
-                "play_area_mm": self._latest_frame_mm_size,
+                "play_area_mm": play_area_mm,
                 **self._stats,
             }
 
