@@ -1,0 +1,30 @@
+:root { color-scheme: dark; font-family: system-ui, -apple-system, sans-serif; }
+body { margin: 0; background: #16161a; color: #e4e4ea; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px; background: #1e1e24; border-bottom: 1px solid #2a2a32;
+}
+header h1 { font-size: 18px; margin: 0; }
+.pill { padding: 4px 10px; border-radius: 999px; background: #2a3a2a; color: #8fd98f; font-size: 12px; }
+main { max-width: 760px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.card { background: #1e1e24; border-radius: 10px; padding: 16px 18px; }
+.card h2 { margin: 0 0 10px 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #3a3a44; color: #9a9aa5; font-weight: 400; }
+.badge.ok { background: #2a3a2a; color: #8fd98f; }
+.hint { color: #8a8a95; font-size: 12px; line-height: 1.5; }
+label { display: block; font-size: 11px; color: #9a9aa5; margin-top: 8px; }
+input, select { width: 100%; box-sizing: border-box; padding: 7px 9px; margin-top: 2px; background: #121216; border: 1px solid #3a3a44; border-radius: 6px; color: #e4e4ea; font-size: 13px; }
+.row { display: flex; gap: 8px; margin-top: 8px; }
+.row > * { flex: 1; }
+button { padding: 9px; background: #4a6fd4; border: none; border-radius: 6px; color: white; font-weight: 600; cursor: pointer; font-size: 13px; }
+button:hover { background: #5a7fe4; }
+button.secondary { background: #3a3a44; }
+button.secondary:hover { background: #4a4a54; }
+.preview-wrap { position: relative; margin-top: 10px; background: #000; border-radius: 8px; overflow: hidden; }
+#preview { width: 100%; display: block; }
+#overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+th, td { text-align: left; padding: 6px 8px; font-size: 12px; border-bottom: 1px solid #2a2a32; }
+th { color: #9a9aa5; font-weight: 600; }
+code { display: block; background: #121216; padding: 8px 10px; border-radius: 6px; font-size: 12px; word-break: break-all; }
+pre { white-space: pre-wrap; }

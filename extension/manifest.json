@@ -1,0 +1,12 @@
+{
+  "name": "Physical Token Tracker",
+  "version": "2.0.0",
+  "manifest_version": 1,
+  "action": {
+    "title": "Token Tracker",
+    "icon": "/extension/icon.svg",
+    "popover": "/extension/index.html",
+    "width": 380,
+    "height": 560
+  }
+}

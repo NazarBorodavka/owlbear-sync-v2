@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Physical Token Tracker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="status" class="status ready">Loading...</div>
+
+  <section class="panel">
+    <h3>Tracker Connection</h3>
+    <label>Tracker URL</label>
+    <input id="trackerUrl" type="text" placeholder="http://192.168.1.50:5000" />
+    <label>Auth (user:password)</label>
+    <input id="trackerAuth" type="text" placeholder="admin:admin" />
+    <button id="connectBtn">Connect</button>
+  </section>
+
+  <section class="panel">
+    <h3>Map Auto-Zoom</h3>
+    <p class="hint">
+      Turn on Owlbear Rodeo's grid overlay, then click below -- the
+      camera measures the projected grid and matches it to your token
+      base size automatically.
+    </p>
+    <button id="autoZoomBtn">Auto-Zoom to Token Size</button>
+    <p id="autoZoomStatus" class="hint"></p>
+  </section>
+
+  <section class="panel">
+    <h3>Token Mapping</h3>
+    <p class="hint">Persists with this scene -- no need to redo it next session.</p>
+    <div id="mappingList"></div>
+  </section>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

@@ -1,1 +1,107 @@
-<!doctype html><html><body>placeholder</body></html>
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Physical Token Tracker</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <header>
+    <h1>Physical Token Tracker</h1>
+    <div id="globalStatus" class="pill">loading...</div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>1. Camera</h2>
+      <label>RTSP URL</label>
+      <input id="cameraUrl" type="text" placeholder="rtsp://user:pass@192.168.1.60:554/h264Preview_01_main" />
+      <div class="row">
+        <button id="startCameraBtn">Start</button>
+        <button id="stopCameraBtn" class="secondary">Stop</button>
+      </div>
+      <div class="preview-wrap">
+        <img id="preview" alt="live preview" />
+        <canvas id="overlay"></canvas>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2. Lens Calibration <span class="badge" id="lensBadge">not calibrated</span></h2>
+      <p class="hint">
+        Optional. Print a 9x6-corner checkerboard (25mm squares), hold it
+        in view at 6+ different angles, capture a frame each time, then
+        calibrate. Skippable -- the tracker tolerates a few percent of
+        lens distortion fine without this.
+      </p>
+      <label>Square size (mm)</label>
+      <input id="squareMm" type="number" value="25" />
+      <div class="row">
+        <button id="captureChessboardBtn">Capture Frame (<span id="chessboardCount">0</span>)</button>
+        <button id="calibrateLensBtn">Calibrate</button>
+        <button id="clearLensBtn" class="secondary">Clear</button>
+      </div>
+      <p id="lensResult" class="hint"></p>
+    </section>
+
+    <section class="card">
+      <h2>3. Play Area <span class="badge" id="playareaBadge">not calibrated</span></h2>
+      <p class="hint">
+        Click the 4 corners of your play area on the preview above, in
+        order: top-left, top-right, bottom-right, bottom-left. Then
+        measure the real width/height with a tape measure.
+      </p>
+      <div class="row">
+        <div>
+          <label>Width (mm)</label>
+          <input id="areaWidthMm" type="number" value="600" />
+        </div>
+        <div>
+          <label>Height (mm)</label>
+          <input id="areaHeightMm" type="number" value="450" />
+        </div>
+      </div>
+      <label>Scale (pixels per mm) &mdash; <span id="scaleHint"></span></label>
+      <input id="pxPerMm" type="range" min="1.5" max="8" step="0.1" value="3.5" />
+      <div class="row">
+        <button id="resetCornersBtn" class="secondary">Reset Corners</button>
+        <button id="calibratePlayareaBtn">Calibrate</button>
+        <button id="clearPlayareaBtn" class="secondary">Clear</button>
+      </div>
+      <p id="playareaResult" class="hint"></p>
+    </section>
+
+    <section class="card">
+      <h2>4. Token Detection <span class="badge" id="detectorBadge">using defaults</span></h2>
+      <p class="hint">
+        Place your real printed tokens on the table, then capture a short
+        burst to measure real contrast and set confident thresholds for
+        this specific camera/lighting.
+      </p>
+      <label>Capture duration (seconds)</label>
+      <input id="detectorDuration" type="number" value="3" />
+      <div class="row">
+        <button id="calibrateDetectorBtn">Measure &amp; Calibrate</button>
+        <button id="resetDetectorBtn" class="secondary">Reset to Defaults</button>
+      </div>
+      <pre id="detectorResult" class="hint"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Live Tokens</h2>
+      <table id="tokenTable">
+        <thead><tr><th>ID</th><th>Name</th><th>Position (mm)</th><th>Age (s)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Owlbear Rodeo Extension</h2>
+      <p class="hint">Add this URL in Owlbear Rodeo's "Add custom extension":</p>
+      <code id="manifestUrl"></code>
+    </section>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>
