@@ -30,7 +30,12 @@ class RingGeometry:
     deliberately not used for that: its contrast depends on the background
     and therefore changes from table to table.
     """
-    base_d_mm: float = 40.0
+    # Default matches the real printed marker: a 40mm physical base with a
+    # 1mm unprinted margin, so the artwork itself is 38mm across. base_d_mm
+    # is the PRINTED diameter -- the physical base can be (and here is)
+    # slightly larger than this, with the margin left blank on purpose so
+    # print registration error can't clip the artwork at the base edge.
+    base_d_mm: float = 38.0
     clear_frac: float = 0.70          # fraction of DIAMETER kept clear
     det_ring_mm: float = 1.5
     gap_mm: float = 0.5
