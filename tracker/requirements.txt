@@ -6,11 +6,25 @@ numpy>=1.24.0,<2.6
 # Only the calibration package (tracker/vision/calibration/) and video I/O
 # need OpenCV: chessboard intrinsic calibration, homography, perspective
 # warp, and RTSP capture are all solved problems there, not worth
-# reimplementing. Pinned to the version validated in this repo's own
-# calibration tests (see tests/test_calibration.py).
-opencv-python-headless==4.9.0.80
+# reimplementing. Pinned rather than ranged because calibration output
+# feeds a PHYSICAL setup -- an intrinsics change between versions would
+# silently shift the mm-per-pixel scale that token positions depend on.
+# This exact pin is what CI installs and runs the calibration tests
+# against, so the pin and the validation stay in step.
+#
+# 4.13.0.92 specifically, matching the opencv-python the test suite was
+# validated against locally. Do NOT drop this below 4.10: wheels built
+# before then link numpy 1.x's ABI, and with numpy 2.x resolved above
+# they fail at import with "numpy.core.multiarray failed to import".
+# The Dockerfile's explicit `import cv2` check exists to catch exactly
+# that class of breakage at build time rather than at runtime.
+opencv-python-headless==4.13.0.92
 
 Flask>=3.0,<3.1
-Flask-SocketIO>=5.3,<5.4
 Flask-HTTPAuth>=4.8,<4.9
-simple-websocket>=1.1,<1.2
+
+# NOTE: v1 also pinned Flask-SocketIO and simple-websocket. v2 does not
+# use them -- the extension polls /api/tokens. They were removed rather
+# than left in place because an unused pinned dependency still has to be
+# audited and still ships in the image. If push-instead-of-poll is added
+# later, add them back then.

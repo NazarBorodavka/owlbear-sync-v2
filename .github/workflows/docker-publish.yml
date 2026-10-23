@@ -1,0 +1,192 @@
+name: Test, Build and Push Docker Image
+
+on:
+  push:
+    branches: [ "**" ]
+
+jobs:
+  # v1's workflow published straight from a push with nothing verifying the
+  # image worked. v2 has a real test suite covering the detection/decode/
+  # track maths, so it gates the publish: a broken tracker should never
+  # reach the app store, because once it does, ZimaOS offers it as an
+  # update and it lands on the table mid-session.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # librsvg provides rsvg-convert, which tests/test_print_roundtrip.py
+      # uses to rasterise the real printable SVG with a renderer that is
+      # not our own code. That test skips itself without it, and it is the
+      # one test that would have caught v1's mirrored print run, so it is
+      # worth installing rather than letting it quietly skip in CI.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends librsvg2-bin
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tracker/requirements.txt
+
+      # The tests are plain scripts with __main__ runners rather than a
+      # pytest suite, so they are invoked directly. Listed explicitly
+      # (not globbed) so a test file that fails to be *collected* -- a
+      # syntax error, a bad import -- is a hard failure here instead of
+      # silently contributing zero coverage.
+      - name: Run test suite
+        run: |
+          set -e
+          for t in test_track test_sequence test_projector test_calibration \
+                   test_runtime test_app test_grid test_codebook_frozen \
+                   test_print_roundtrip; do
+            echo "::group::$t"
+            python "tests/$t.py"
+            echo "::endgroup::"
+          done
+
+      # Guards the invariant that matters most for physical hardware: the
+      # committed codebook is what the markers were printed from. If a
+      # commit changes tracker/data/codebook.json, every marker already on
+      # the table is invalidated, so that must be a deliberate, visible act
+      # rather than something noticed weeks later.
+      - name: Warn if the printed-marker codebook changed
+        if: github.event_name == 'push'
+        run: |
+          if git rev-parse HEAD^ >/dev/null 2>&1 && \
+             ! git diff --quiet HEAD^ HEAD -- tracker/data/codebook.json; then
+            echo "::warning title=Codebook changed::tracker/data/codebook.json changed in this commit. Every physical marker printed from the previous codebook is now invalid and must be reprinted with tools/generate_markers.py."
+          fi
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Lowercase repo owner
+        run: |
+          echo "OWNER_LC=${OWNER,,}" >>${GITHUB_ENV}
+        env:
+          OWNER: "${{ github.repository_owner }}"
+
+      # Same run-number-to-"1.05" display scheme as v1, but v2's run
+      # numbering starts from 1 in this repo, so versions begin at 0.01
+      # rather than continuing v1's hundreds.
+      - name: Compute display version
+        run: |
+          N=${{ github.run_number }}
+          printf -v VER "%d.%02d" $((N/100)) $((N%100))
+          echo "DISPLAY_VERSION=$VER" >> "$GITHUB_ENV"
+
+      # NOTE the image name: owlbear-tracker-v2, deliberately distinct from
+      # v1's owlbear-tracker. v1 is still deployed and its store entry
+      # points at owlbear-tracker:master-N; sharing the name would let a v2
+      # build silently replace a running v1 install.
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ env.OWNER_LC }}/owlbear-tracker-v2
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=raw,value={{branch}}-${{ github.run_number }}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ github.workspace }}
+          file: ${{ github.workspace }}/Dockerfile
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ env.DISPLAY_VERSION }}
+            BUILD_BRANCH=${{ github.ref_name }}
+            BUILD_COMMIT=${{ github.sha }}
+
+      # Confirms the pushed image actually serves before the app store is
+      # told to offer it as an update. The unit tests above never start the
+      # real entrypoint, so this catches packaging-level breakage -- a
+      # missing __init__.py, a wrong WORKDIR, a module path that only
+      # resolves outside the container. Both of those were real v2 bugs.
+      - name: Smoke-test the built image
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          docker run -d --name smoke -p 5000:5000 \
+            -e TRACKER_PASSWORD=smoketest "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fsS -u admin:smoketest http://127.0.0.1:5000/ >/dev/null 2>&1; then
+              echo "server responded after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          echo "--- /api/version ---"
+          curl -fsS http://127.0.0.1:5000/api/version
+          echo
+          echo "--- /api/tokens ---"
+          curl -fsS http://127.0.0.1:5000/api/tokens
+          echo
+          echo "--- /extension/manifest.json ---"
+          curl -fsS http://127.0.0.1:5000/extension/manifest.json
+          echo
+          # Confirms the shipped codebook survived the image build, since a
+          # decoder running on a different codebook than the printed
+          # markers is the failure this whole design guards against.
+          curl -fsS http://127.0.0.1:5000/api/version \
+            | grep -q '"n_chips": *20' \
+            || (echo "shipped codebook is not the expected 20-chip one" && exit 1)
+          docker logs smoke
+          docker rm -f smoke
+
+      - name: Compute build date
+        if: github.ref == 'refs/heads/master'
+        run: echo "BUILD_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
+
+      # Tells the separate owlbear-sync-store repo about this build so
+      # ZimaOS/CasaOS shows "Update available" rather than needing a manual
+      # uninstall/reinstall. Needs a fine-grained PAT scoped to
+      # owlbear-sync-store in the STORE_DISPATCH_TOKEN secret, since the
+      # default GITHUB_TOKEN cannot reach across repos.
+      #
+      # event-type is new-image-v2, NOT v1's new-image: the store repo's
+      # existing handler bumps the v1 entry's pinned tag, and reusing the
+      # event name would point the v1 store entry at a v2 image. The store
+      # repo needs a handler for this new event (and a v2 entry with its
+      # own compose file) before this does anything -- continue-on-error
+      # means that gap cannot fail the image publish in the meantime.
+      - name: Notify app store of new build
+        if: github.ref == 'refs/heads/master'
+        continue-on-error: true
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.STORE_DISPATCH_TOKEN }}
+          repository: NazarBorodavka/owlbear-sync-store
+          event-type: new-image-v2
+          client-payload: '{"tag": "master-${{ github.run_number }}", "version": "${{ env.DISPLAY_VERSION }}", "date": "${{ env.BUILD_DATE }}", "image": "owlbear-tracker-v2"}'

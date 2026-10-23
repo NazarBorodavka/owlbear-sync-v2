@@ -83,6 +83,31 @@ def _register_routes(app):
         this tracker's own /extension/manifest.json."""
         return send_from_directory(EXTENSION_DIR, filename)
 
+    @app.route("/api/version")
+    def api_version():
+        """Public so "did my update actually deploy" is answerable without
+        logging in. The Dockerfile accepts these as build args and the CI
+        workflow fills them from the run number and commit; a local run
+        reports the dev/local/unknown defaults.
+
+        Also reports the codebook fingerprint, because that is the one
+        thing that must match the PHYSICAL markers on the table -- if a
+        build ever ships a different codebook, the printed markers need
+        reprinting, and this is where that becomes visible.
+        """
+        from ..vision.codebook import codebook_metadata
+        meta = codebook_metadata()
+        return jsonify({
+            "version": os.environ.get("BUILD_VERSION", "dev"),
+            "branch": os.environ.get("BUILD_BRANCH", "local"),
+            "commit": os.environ.get("BUILD_COMMIT", "unknown"),
+            "codebook": {
+                "n_chips": meta["n_chips"],
+                "n_ids": meta["n_ids"],
+                "worst_crosscorrelation": meta["worst_pairwise_crosscorrelation"],
+            },
+        })
+
     # -----------------------------------------------------------------
     # Live video + tokens
     # -----------------------------------------------------------------
