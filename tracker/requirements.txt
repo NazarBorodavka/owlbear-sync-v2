@@ -1,0 +1,16 @@
+# Core vision (tracker/vision/{geometry,codebook,decode,detect,track,pipeline}.py)
+# is deliberately pure numpy -- no native dependency, validated end-to-end
+# against synthetic sequences in tests/. See docs/VALIDATION.md.
+numpy>=1.24.0,<2.6
+
+# Only the calibration package (tracker/vision/calibration/) and video I/O
+# need OpenCV: chessboard intrinsic calibration, homography, perspective
+# warp, and RTSP capture are all solved problems there, not worth
+# reimplementing. Pinned to the version validated in this repo's own
+# calibration tests (see tests/test_calibration.py).
+opencv-python-headless==4.9.0.80
+
+Flask>=3.0,<3.1
+Flask-SocketIO>=5.3,<5.4
+Flask-HTTPAuth>=4.8,<4.9
+simple-websocket>=1.1,<1.2
