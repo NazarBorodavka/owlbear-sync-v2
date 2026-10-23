@@ -1,0 +1,38 @@
+# Standalone deployment. For ZimaOS/CasaOS, prefer the app-store entry
+# (see README) which handles AppData paths and update prompts; this file
+# is for a plain `docker compose up -d` on any host, and is also what you
+# paste into ZimaOS's "Custom Install" if you would rather not wait for
+# the store to pick up a build.
+services:
+  tracker:
+    image: ghcr.io/nazarborodavka/owlbear-tracker-v2:latest
+    container_name: owlbear-tracker-v2
+    # 5001, not 5000: v1 uses 5000, and the two are meant to be able to
+    # run side by side while you migrate. Change the left-hand number if
+    # you are not running v1.
+    ports:
+      - "5001:5000"
+    volumes:
+      # Calibration, token names and the remembered camera URL. Without
+      # this you recalibrate after every restart.
+      - owlbear-tracker-v2-data:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      # CHANGE THIS. The dashboard is a plain HTTP basic-auth login and
+      # the default really is admin/admin.
+      - TRACKER_USER=admin
+      - TRACKER_PASSWORD=change-me
+      # Optional: pin the camera here instead of entering it in the
+      # dashboard. If set, this wins over anything typed in the UI and
+      # survives restarts, which is usually what you want for an
+      # appliance. Note it embeds the camera password, so this file
+      # becomes a secret -- leave it unset and use the dashboard if you
+      # would rather the credential live only in the data volume (which
+      # is stored 0600).
+      # - TRACKER_CAMERA_URL=rtsp://user:pass@192.168.1.60:554/h264Preview_01_main
+      # Optional: set to 0 to stop the camera auto-starting at boot.
+      # - TRACKER_AUTOSTART=0
+    restart: unless-stopped
+
+volumes:
+  owlbear-tracker-v2-data:

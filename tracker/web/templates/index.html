@@ -16,9 +16,11 @@
       <h2>1. Camera</h2>
       <label>RTSP URL</label>
       <input id="cameraUrl" type="text" placeholder="rtsp://user:pass@192.168.1.60:554/h264Preview_01_main" />
+      <p id="cameraConfigStatus" class="hint"></p>
       <div class="row">
         <button id="startCameraBtn">Start</button>
         <button id="stopCameraBtn" class="secondary">Stop</button>
+        <button id="forgetCameraBtn" class="secondary">Forget</button>
       </div>
       <div class="preview-wrap">
         <img id="preview" alt="live preview" />

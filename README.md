@@ -184,7 +184,22 @@ Then open `http://<host>:5000`.
 |---|---|---|
 | `TRACKER_USER` | `admin` | dashboard login |
 | `TRACKER_PASSWORD` | `admin` | **change this** |
-| `TRACKER_DATA_DIR` | `/data` | calibration + token names live here |
+| `TRACKER_DATA_DIR` | `/data` | calibration, names, remembered camera URL |
+| `TRACKER_CAMERA_URL` | unset | pin the camera here instead of the dashboard |
+| `TRACKER_AUTOSTART` | `1` | set `0` to not start the camera at boot |
+
+The camera URL can come from either place. Enter it once in the
+dashboard and it is remembered in the data volume (stored `0600`, since
+an RTSP URL embeds the camera login) and auto-started on every
+subsequent boot. Or set `TRACKER_CAMERA_URL`, which wins over the
+remembered value and makes the compose file the single source of truth —
+at the cost of putting the camera password in that file. The dashboard
+shows a redacted form either way and never returns the full URL.
+
+An unreachable camera at boot is not fatal: the connection attempt runs
+in the background, so the dashboard is available immediately regardless
+(measured: 229ms to first response with a dead camera, against a 225ms
+baseline). Press Start once the camera is back.
 
 Mount `TRACKER_DATA_DIR` on a volume or you will recalibrate after every
 container restart.

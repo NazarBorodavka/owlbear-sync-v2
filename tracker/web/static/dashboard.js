@@ -63,12 +63,54 @@ function resizeOverlay() {
 window.addEventListener("resize", resizeOverlay);
 preview.addEventListener("load", resizeOverlay);
 
-document.getElementById("startCameraBtn").addEventListener("click", async () => {
-  const url = document.getElementById("cameraUrl").value.trim();
-  if (!url) return alert("Enter a camera URL first");
+// Reflects the stored/pinned camera config. The URL itself is never
+// sent back by the server -- it normally embeds the camera login -- so
+// this shows the redacted form and leaves the input empty, and Start
+// with an empty input reuses whatever the host already has.
+async function refreshCameraConfig() {
+  const status = document.getElementById("cameraConfigStatus");
+  const input = document.getElementById("cameraUrl");
   try {
-    await api("/api/camera/start", { method: "POST", body: JSON.stringify({ url }) });
+    const cfg = await api("/api/camera");
+    if (!cfg.configured) {
+      status.textContent = "No camera configured yet.";
+      input.disabled = false;
+      input.placeholder = "rtsp://user:pass@192.168.1.60:554/h264Preview_01_main";
+      return;
+    }
+    if (cfg.editable) {
+      status.textContent = `Saved: ${cfg.url_redacted} — ` +
+        `${cfg.running ? "running" : "stopped"}. ` +
+        `Press Start to reuse it, or enter a new URL to replace it.`;
+      input.disabled = false;
+      input.placeholder = "leave empty to reuse the saved URL";
+    } else {
+      // Pinned by TRACKER_CAMERA_URL in compose: editing here would be
+      // a lie, since the environment wins and survives a restart.
+      status.textContent = `Set by TRACKER_CAMERA_URL: ${cfg.url_redacted} — ` +
+        `${cfg.running ? "running" : "stopped"}. ` +
+        `Change it in your compose file, not here.`;
+      input.disabled = true;
+      input.placeholder = "fixed by the deployment";
+    }
+  } catch (e) {
+    status.textContent = "";
+  }
+}
+
+document.getElementById("startCameraBtn").addEventListener("click", async () => {
+  const input = document.getElementById("cameraUrl");
+  const url = input.value.trim();
+  try {
+    // An empty body deliberately means "use the configured URL", so the
+    // operator never has to retype a credentialed RTSP URL.
+    await api("/api/camera/start", {
+      method: "POST",
+      body: JSON.stringify(url ? { url } : {}),
+    });
+    input.value = "";
     preview.src = "/video_feed?ts=" + Date.now();
+    refreshCameraConfig();
   } catch (e) {
     alert("Failed to start camera: " + e.message);
   }
@@ -77,7 +119,24 @@ document.getElementById("startCameraBtn").addEventListener("click", async () => 
 document.getElementById("stopCameraBtn").addEventListener("click", async () => {
   await api("/api/camera/stop", { method: "POST" });
   preview.removeAttribute("src");
+  refreshCameraConfig();
 });
+
+document.getElementById("forgetCameraBtn").addEventListener("click", async () => {
+  if (!confirm("Forget the saved camera URL? You will need to re-enter it.")) return;
+  await api("/api/camera", { method: "DELETE" });
+  preview.removeAttribute("src");
+  refreshCameraConfig();
+});
+
+// If the camera auto-started at boot, show its feed without needing a click.
+(async () => {
+  await refreshCameraConfig();
+  try {
+    const cfg = await api("/api/camera");
+    if (cfg.running) preview.src = "/video_feed?ts=" + Date.now();
+  } catch (e) { /* not authenticated yet; the prompt flow handles it */ }
+})();
 
 overlay.addEventListener("click", (e) => {
   const rect = overlay.getBoundingClientRect();

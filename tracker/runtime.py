@@ -84,17 +84,47 @@ class TrackerRuntime:
         return self.pipeline
 
     def start(self, camera_url):
+        """Starts capture. Deliberately does NOT require calibration.
+
+        Capture and tracking are separate concerns, and conflating them
+        created an unresolvable first-deploy deadlock: start() demanded a
+        play-area calibration, but an operator can only click the four
+        play-area corners on a LIVE camera preview -- so the camera could
+        not start until calibration existed, and calibration could not be
+        done until the camera started.
+
+        So the pipeline is built if it can be, and left as None if not.
+        The loop keeps capturing either way, which is what makes the
+        preview (and therefore calibration) possible on a fresh install.
+        """
         from .capture import RtspCapture
-        self.prepare_pipeline()
+        try:
+            self.prepare_pipeline()
+        except RuntimeError as e:
+            with self._lock:
+                self.pipeline = None
+                self._stats["error"] = str(e)
         self.capture = RtspCapture(camera_url)
+        # Publish self._thread only AFTER it is actually started. Assigning
+        # first left a window where a concurrent stop() -- which is
+        # reachable, since auto-start runs on a background thread while the
+        # operator can already use the dashboard -- saw a non-None thread
+        # that had not started yet and died on
+        # "cannot join thread before it is started".
+        t = threading.Thread(target=self._loop, name="tracker-loop", daemon=True)
         self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
+        t.start()
+        self._thread = t
+
+    def is_running(self):
+        return self._running
 
     def stop(self):
         self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
+        t = self._thread
+        if t is not None and t.is_alive():
+            t.join(timeout=3.0)
+        self._thread = None
         if self.capture is not None:
             self.capture.release()
             self.capture = None
@@ -159,11 +189,20 @@ class TrackerRuntime:
         actually failed to process.
         """
         now = time.time() if now is None else now
+        with self._lock:
+            pipe = self.pipeline
+        if pipe is None:
+            # Not calibrated yet: frames are still arriving and still
+            # feed the live preview the operator calibrates against, so
+            # this is a healthy connected state with nothing to track --
+            # not an error.
+            with self._lock:
+                self._latest_tokens = []
+                self._stats["last_frame_time"] = now
+            return True
         try:
             gray = raw if raw.ndim == 2 else _bgr_to_gray(raw)
             rectified = self.session.rectify(gray)
-            with self._lock:
-                pipe = self.pipeline
             reported = pipe.process(rectified, now=now)
             tokens = pipe.tokens_mm(reported)
         except Exception as e:
@@ -197,9 +236,7 @@ class TrackerRuntime:
         """Encode the most recent rectified frame for the web dashboard's
         live preview. Returns None if nothing has been processed yet."""
         import cv2
-        with self._lock:
-            pipe = self.pipeline
-        if pipe is None or self.capture is None:
+        if self.capture is None:
             return None
         ok, raw = self.capture.read()
         if not ok:
@@ -208,7 +245,15 @@ class TrackerRuntime:
         try:
             rectified = self.session.rectify(gray)
         except Exception:
-            return None
+            # Before play-area calibration there is no rectification to
+            # apply, so serve the RAW frame: this is the image the
+            # operator clicks the four corners on, and without it the
+            # calibration step has nothing to work from.
+            #
+            # Raw and not lens-undistorted on purpose -- the play-area
+            # endpoint undistorts the clicked POINTS itself, so showing
+            # an already-undistorted image would double-correct them.
+            rectified = gray
         disp = np.clip(rectified, 0, 255).astype(np.uint8) if rectified.max() > 1.5 \
             else np.clip(rectified * 255, 0, 255).astype(np.uint8)
         ok, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, quality])

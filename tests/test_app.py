@@ -142,14 +142,40 @@ def test_grid_measure_endpoint_with_injected_camera():
           f"(true {true_mm}mm) via an injected fake camera, no RTSP needed")
 
 
-def test_camera_start_requires_playarea_calibration_first():
+def test_camera_start_does_not_require_calibration():
+    """Capture must be startable on a fresh install.
+
+    This test previously asserted the OPPOSITE -- that starting the camera
+    without a play-area calibration fails with a 400. That was enforcing a
+    first-deploy deadlock: the operator calibrates the play area by
+    clicking its four corners on a LIVE camera preview, so requiring
+    calibration before capture meant the camera could never start on a new
+    install, and the dashboard could never show anything to click.
+
+    Capture and tracking are separate concerns. Capture starts; tracking
+    begins once a pipeline can be built. See TrackerRuntime.start().
+    """
     app = _fresh_app()
     client = app.test_client()
     auth = ("admin", "admin")
-    r = client.post("/api/camera/start", auth=auth, json={"url": "rtsp://example/stream"})
-    assert r.status_code == 400
-    assert "play-area" in r.get_json()["error"]
-    print("  starting the camera before play-area calibration fails with a clear error")
+
+    # With nothing configured, a missing URL is still an error: there is
+    # genuinely nothing to connect to.
+    bad = client.post("/api/camera/start", auth=auth, json={})
+    assert bad.status_code == 400 and "url" in bad.get_json()["error"], bad.get_json()
+
+    r = client.post("/api/camera/start", auth=auth, json={"url": "rtsp://127.0.0.1:1/x"})
+    try:
+        assert r.status_code == 200, r.get_json()
+        assert app.runtime.pipeline is None, \
+            "no pipeline should exist without calibration"
+        # Now that a URL is remembered, Start with an empty body reuses it
+        # rather than making the operator retype a credentialed URL.
+        again = client.post("/api/camera/start", auth=auth, json={})
+        assert again.status_code == 200, again.get_json()
+        print("  camera starts without calibration; Start reuses the saved URL")
+    finally:
+        app.runtime.stop()
 
 
 if __name__ == "__main__":
@@ -162,5 +188,5 @@ if __name__ == "__main__":
     test_playarea_preview_does_not_persist()
     test_calibration_status_reflects_each_stage_independently()
     test_grid_measure_endpoint_with_injected_camera()
-    test_camera_start_requires_playarea_calibration_first()
+    test_camera_start_does_not_require_calibration()
     print("\nall app tests passed")

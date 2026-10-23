@@ -45,7 +45,7 @@ jobs:
           set -e
           for t in test_track test_sequence test_projector test_calibration \
                    test_runtime test_app test_grid test_codebook_frozen \
-                   test_print_roundtrip test_replay; do
+                   test_print_roundtrip test_replay test_camera_config; do
             echo "::group::$t"
             python "tests/$t.py"
             echo "::endgroup::"

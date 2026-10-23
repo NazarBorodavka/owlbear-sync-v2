@@ -10,6 +10,7 @@ not implementing anything itself. That split is what v1's single
 """
 import base64
 import os
+import threading
 import time
 
 import numpy as np
@@ -18,6 +19,7 @@ from flask_httpauth import HTTPBasicAuth
 
 from ..runtime import TrackerRuntime, _bgr_to_gray
 from ..names import NameStore
+from ..settings import SettingsStore, redact
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXTENSION_DIR = os.path.join(os.path.dirname(BASE_DIR), "extension")
@@ -54,12 +56,79 @@ def create_app(data_dir=None, users=None):
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.runtime = TrackerRuntime(calibration_dir)
     app.names = NameStore(names_path)
+    app.settings = SettingsStore(os.path.join(data_dir, "settings.json"))
     app.extension_users = users or {
         os.environ.get("TRACKER_USER", "admin"):
         os.environ.get("TRACKER_PASSWORD", "admin")}
 
     _register_routes(app)
+    _maybe_autostart_camera(app)
     return app
+
+
+def camera_url_for(app):
+    """The configured camera URL and where it came from.
+
+    TRACKER_CAMERA_URL wins over the remembered one: it is declarative
+    config from compose, so what the compose file says should be what
+    runs, and an operator who once typed a different URL into the
+    dashboard should not silently override the deployment's own setting.
+    """
+    env_url = os.environ.get("TRACKER_CAMERA_URL")
+    if env_url:
+        return env_url, "env"
+    saved = app.settings.get("camera_url")
+    if saved:
+        return saved, "saved"
+    return None, None
+
+
+def _maybe_autostart_camera(app):
+    """Starts capture at boot so a restart does not need a human.
+
+    Without this the camera URL lived only in memory, so every ZimaOS
+    reboot or app update left the tracker idle until someone opened the
+    dashboard and retyped it -- on an appliance, indistinguishable from
+    being broken.
+
+    Every failure here is deliberately non-fatal. On a first deploy there
+    is no play-area calibration yet, so there is legitimately nothing to
+    start; and at boot the camera may simply not be up yet (it is a
+    separate device on the network that may be slower to boot than the
+    host). Neither is a reason to refuse to serve the dashboard -- which
+    is the only place the operator can go to fix it.
+    """
+    if os.environ.get("TRACKER_AUTOSTART", "1").lower() in ("0", "false", "no"):
+        return
+    url, source = camera_url_for(app)
+    if not url:
+        return
+
+    def _attempt():
+        try:
+            app.runtime.start(url)
+            app.logger.info("camera auto-started from %s config: %s",
+                            source, redact(url))
+        except Exception as e:
+            app.logger.warning(
+                "camera auto-start failed (%s: %s) -- the dashboard is "
+                "still available; fix the camera and press Start there",
+                type(e).__name__, e)
+
+    # On a BACKGROUND thread, because opening an RTSP stream blocks until
+    # it connects or FFmpeg times out, and that timeout is 30s per
+    # attempt. Doing this inline meant an unreachable camera -- switched
+    # off, or moved to a new IP -- stopped the web server from binding at
+    # all: measured, the dashboard never served within 70s. That is the
+    # worst possible failure for an appliance, because the dashboard is
+    # the only place the operator can go to correct the URL, and with
+    # restart: unless-stopped it would loop forever.
+    #
+    # Daemon so a never-connecting attempt cannot hold up interpreter
+    # exit either.
+    threading.Thread(target=_attempt, name="camera-autostart",
+                     daemon=True).start()
+
 
 
 @auth.verify_password
@@ -331,18 +400,52 @@ def _register_routes(app):
     def start_camera():
         data = request.json or {}
         url = data.get("url")
+        configured, source = camera_url_for(app)
         if not url:
-            return jsonify({"error": "missing camera url"}), 400
+            # Fall back to the configured URL so the dashboard's Start
+            # button works without the operator retyping a credentialed
+            # RTSP URL that the host already knows.
+            url = configured
+            if not url:
+                return jsonify({"error": "missing camera url"}), 400
         try:
             app.runtime.start(url)
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 400
-        return jsonify({"ok": True})
+        # Remembered only when it is not already fixed by the environment,
+        # so compose stays the single source of truth where it is used.
+        if source != "env" and url != configured:
+            app.settings.set("camera_url", url)
+        return jsonify({"ok": True, "url": redact(url)})
+
+    @app.route("/api/camera", methods=["GET"])
+    @auth.login_required
+    def camera_config():
+        """Behind auth and REDACTED: an RTSP URL normally embeds the
+        camera login, so the full value must never leave the host."""
+        url, source = camera_url_for(app)
+        return jsonify({
+            "configured": url is not None,
+            "source": source,
+            "url_redacted": redact(url),
+            "running": app.runtime.is_running(),
+            "editable": source != "env",
+        })
 
     @app.route("/api/camera/stop", methods=["POST"])
     @auth.login_required
     def stop_camera():
+        """Stop is deliberately temporary -- it does not forget the
+        remembered URL, so a stop/start cycle (or a restart) does not cost
+        the operator the credential again. DELETE /api/camera forgets it."""
         app.runtime.stop()
+        return jsonify({"ok": True})
+
+    @app.route("/api/camera", methods=["DELETE"])
+    @auth.login_required
+    def forget_camera():
+        app.runtime.stop()
+        app.settings.set("camera_url", None)
         return jsonify({"ok": True})
 
 
