@@ -17,13 +17,13 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tracker.vision.geometry import RingGeometry
-from tracker.vision.codebook import build_codebook
+from tracker.vision.codebook import load_codebook
 from tracker.vision.pipeline import Pipeline
 from tracker.vision import simulate as sim
 
 PX_MM = 3.2
 GEOM = RingGeometry()
-CB = build_codebook(20, 8, seed=1)
+CB = load_codebook(n_ids=8)
 W, H = 900, 640
 FPS = 15.0
 

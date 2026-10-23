@@ -15,7 +15,7 @@ import time
 import numpy as np
 
 from .vision.calibration.session import CalibrationSession
-from .vision.codebook import build_codebook
+from .vision.codebook import codebook_metadata, load_codebook
 from .vision.geometry import RingGeometry
 
 
@@ -41,7 +41,19 @@ class TrackerRuntime:
                  target_fps=15.0, rescan_hz=3.0):
         self.geom = RingGeometry(n_chips=n_chips)
         self.geom.validate()
-        self.codebook = build_codebook(n_chips, n_ids, seed=1)
+        # Loaded from the committed codebook, never regenerated here: the
+        # decoder must expect exactly the codewords the physical markers
+        # were PRINTED from. See load_codebook()'s comment in
+        # tracker/vision/codebook.py.
+        frozen_chips = codebook_metadata()["n_chips"]
+        if frozen_chips != n_chips:
+            raise ValueError(
+                f"n_chips={n_chips} does not match the frozen codebook's "
+                f"{frozen_chips}; the printed markers have {frozen_chips} "
+                f"chips, so decoding with {n_chips} would be guaranteed to "
+                f"fail. Mint a new codebook with tools/generate_codebook.py "
+                f"and reprint all markers if you really want to change this.")
+        self.codebook = load_codebook(n_ids=n_ids)
         self.session = CalibrationSession(calibration_dir, geom=self.geom,
                                           codebook=self.codebook)
         self.target_fps = target_fps

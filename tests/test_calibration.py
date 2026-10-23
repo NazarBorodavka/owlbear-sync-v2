@@ -14,13 +14,13 @@ except ImportError:
     CV2_AVAILABLE = False
 
 from tracker.vision.geometry import RingGeometry
-from tracker.vision.codebook import build_codebook
+from tracker.vision.codebook import load_codebook
 from tracker.vision import simulate as sim
 from tracker.vision.calibration.store import CalibrationStore
 from tracker.vision.calibration.session import CalibrationSession
 
 GEOM = RingGeometry()
-CB = build_codebook(20, 8, seed=1)
+CB = load_codebook(n_ids=8)
 TEST_DIR = "/tmp/v2_calibration_test"
 
 

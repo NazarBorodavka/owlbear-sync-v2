@@ -21,14 +21,14 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from tracker.vision.geometry import RingGeometry
-from tracker.vision.codebook import build_codebook
+from tracker.vision.codebook import load_codebook
 from tracker.vision.decode import Matcher
 from tracker.vision.detect import Detector
 from tracker.vision import simulate as sim
 
 PX_MM = 3.2
 GEOM = RingGeometry()
-CB = build_codebook(20, 8, seed=1)
+CB = load_codebook(n_ids=8)
 
 
 def trial(rng, projector_kw, monochrome, px_mm=PX_MM, force_grid_center=False):

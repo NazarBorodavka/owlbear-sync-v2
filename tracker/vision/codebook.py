@@ -96,3 +96,68 @@ def quality(cb):
 def to_bits(cb):
     """+/-1 -> 0/1, for human-readable display and printing."""
     return ((np.asarray(cb) > 0).astype(int)).tolist()
+
+
+# ---------------------------------------------------------------------------
+# The frozen, shipped codebook
+# ---------------------------------------------------------------------------
+# The codebook is deliberately a COMMITTED DATA FILE, not something
+# regenerated at runtime from a seed, for one reason that matters far more
+# than the (real, ~4s) startup cost it also saves:
+#
+# The physical markers are PRINTED from this codebook. If the decoder
+# derives its expected codewords by re-running a search at import time,
+# then any change to that search -- a numpy RNG implementation change
+# across versions, a tweaked default, a reordered candidate loop -- would
+# silently desync the decoder from markers already printed and sitting on
+# someone's table, with no error and no way to notice except tokens
+# mysteriously refusing to decode.
+#
+# That is exactly the failure v1 hit when a whole print run turned out
+# mirrored relative to what the decoder expected: artwork and decoder
+# expectations living in separate places and drifting apart. Freezing the
+# codebook makes the artwork generator and the decoder read the SAME
+# bytes, so they cannot disagree.
+#
+# To mint a NEW codebook (which invalidates every printed marker -- they
+# must all be reprinted), run tools/generate_codebook.py deliberately.
+import json
+import os
+
+_CODEBOOK_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "codebook.json")
+
+_cached = None
+
+
+def load_codebook(path=None, n_ids=None):
+    """Loads the frozen, shipped codebook as a +/-1 float array.
+
+    n_ids optionally truncates to the first n_ids codewords -- the full
+    set is sized for the largest supported token library, and a smaller
+    deployment pays nothing for the unused ones except a marginally
+    tighter decode margin from having more candidates to rule out.
+    """
+    global _cached
+    if path is None and _cached is not None:
+        payload = _cached
+    else:
+        with open(path or _CODEBOOK_PATH) as f:
+            payload = json.load(f)
+        if path is None:
+            _cached = payload
+    bits = payload["codewords"]
+    if n_ids is not None:
+        if n_ids > len(bits):
+            raise ValueError(
+                f"requested {n_ids} ids but the frozen codebook only has "
+                f"{len(bits)}; mint a larger one with tools/generate_codebook.py "
+                f"(this invalidates all printed markers)")
+        bits = bits[:n_ids]
+    arr = np.asarray(bits, dtype=np.float64)
+    return np.where(arr > 0, 1.0, -1.0)
+
+
+def codebook_metadata(path=None):
+    with open(path or _CODEBOOK_PATH) as f:
+        return json.load(f)
