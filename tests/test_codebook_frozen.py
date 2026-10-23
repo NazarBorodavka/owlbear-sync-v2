@@ -1,6 +1,6 @@
 """Guards the frozen codebook against silent drift from printed markers.
 
-The physical markers are printed from tracker/data/codebook.json. If that
+The physical markers are printed from tracker/vision/codebook_data.json. If that
 file's contents ever change, every marker already printed becomes
 undecodable -- silently, with tokens simply failing to be recognised and
 no error pointing at the cause. v1 lost significant debugging time to
@@ -155,6 +155,37 @@ def test_runtime_rejects_a_chip_count_the_markers_do_not_have():
             raise AssertionError("mismatched n_chips silently succeeded")
 
 
+def test_codebook_does_not_live_in_a_mountable_data_directory():
+    """The codebook must not sit where user state gets bind-mounted.
+
+    It was briefly in tracker/data/, which is the default
+    TRACKER_DATA_DIR. Bind-mounting a host directory there for
+    calibration persistence -- exactly what ZimaOS/CasaOS does -- shadowed
+    the codebook and the app died at startup with FileNotFoundError.
+    Named Docker volumes masked it, because an empty named volume is
+    seeded from the image on first mount; a bind mount is not.
+
+    So: shipped constants and mutable user state must stay in separate
+    trees, and this asserts the codebook is on the code side of that line.
+    """
+    import tracker.vision.codebook as cbmod
+    path = cbmod._CODEBOOK_PATH
+    assert os.path.isfile(path), path
+    parts = os.path.normpath(path).split(os.sep)
+    assert "data" not in parts[:-1], (
+        f"codebook lives under a 'data' directory ({path}); a bind mount "
+        f"for persistence would shadow it and break startup")
+
+    # And the app's default data dir must not contain it either, whatever
+    # that default happens to be.
+    from tracker.web import app as appmod
+    default_data_dir = os.environ.get(
+        "TRACKER_DATA_DIR", os.path.join(appmod.BASE_DIR, "data"))
+    assert not os.path.abspath(path).startswith(
+        os.path.abspath(default_data_dir) + os.sep), (
+        f"codebook {path} is inside the default data dir {default_data_dir}")
+
+
 if __name__ == "__main__":
     test_frozen_codebook_shape_is_unchanged()
     print("  shape unchanged: 24 codewords x 20 chips")
@@ -169,6 +200,8 @@ if __name__ == "__main__":
     print("  generator still reproduces the committed codebook bit-for-bit")
     test_loading_is_fast_enough_for_container_startup()
     print("  loads fast (no regeneration at startup)")
+    test_codebook_does_not_live_in_a_mountable_data_directory()
+    print("  codebook is outside any mountable data directory")
     test_requesting_more_ids_than_exist_fails_loudly()
     test_runtime_rejects_a_chip_count_the_markers_do_not_have()
     print("  mismatched requests rejected loudly")

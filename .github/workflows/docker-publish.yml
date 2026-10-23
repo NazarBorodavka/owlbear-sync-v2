@@ -53,15 +53,15 @@ jobs:
 
       # Guards the invariant that matters most for physical hardware: the
       # committed codebook is what the markers were printed from. If a
-      # commit changes tracker/data/codebook.json, every marker already on
+      # commit changes tracker/vision/codebook_data.json, every marker already on
       # the table is invalidated, so that must be a deliberate, visible act
       # rather than something noticed weeks later.
       - name: Warn if the printed-marker codebook changed
         if: github.event_name == 'push'
         run: |
           if git rev-parse HEAD^ >/dev/null 2>&1 && \
-             ! git diff --quiet HEAD^ HEAD -- tracker/data/codebook.json; then
-            echo "::warning title=Codebook changed::tracker/data/codebook.json changed in this commit. Every physical marker printed from the previous codebook is now invalid and must be reprinted with tools/generate_markers.py."
+             ! git diff --quiet HEAD^ HEAD -- tracker/vision/codebook_data.json; then
+            echo "::warning title=Codebook changed::tracker/vision/codebook_data.json changed in this commit. Every physical marker printed from the previous codebook is now invalid and must be reprinted with tools/generate_markers.py."
           fi
 
   build:

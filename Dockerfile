@@ -29,6 +29,15 @@ RUN python -c "import cv2; print(f'[OK] cv2 version: {cv2.__version__}')" || \
 COPY tracker ./tracker
 COPY extension ./extension
 
+# A dedicated, mountable state directory. Without this the default would
+# be ./data relative to the package (/app/tracker/data), so bind-mounting
+# it for persistence would shadow shipped files -- which is how
+# codebook_data.json once got hidden and broke startup. Shipped code and
+# user state stay in separate trees.
+ENV TRACKER_DATA_DIR=/data
+RUN mkdir -p /data
+VOLUME ["/data"]
+
 ARG BUILD_VERSION=dev
 ARG BUILD_BRANCH=local
 ARG BUILD_COMMIT=unknown

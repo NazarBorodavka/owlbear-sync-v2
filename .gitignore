@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+
+# Local dev state (calibration, token names). The container uses /data.
+# The codebook is NOT here -- it is a shipped constant in tracker/vision/.
+tracker/data/
+data/
+markers/

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Emits printable marker artwork from the FROZEN codebook.
 
-This reads tracker/data/codebook.json -- the same file the decoder reads
+This reads tracker/vision/codebook_data.json -- the same file the decoder reads
 -- so the printed artwork and the decoder's expectations cannot disagree.
 That shared-source-of-truth property is the whole point; see the comment
 above load_codebook() in tracker/vision/codebook.py.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mints a NEW frozen codebook into tracker/data/codebook.json.
+"""Mints a NEW frozen codebook into tracker/vision/codebook_data.json.
 
 WARNING: running this invalidates every physical marker already printed
 from the previous codebook. They will all need reprinting. This is
@@ -24,7 +24,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-attempts", type=int, default=12000)
     ap.add_argument("--out", default=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "tracker", "data", "codebook.json"))
+        os.path.dirname(os.path.abspath(__file__)), "..", "tracker", "vision",
+        "codebook_data.json"))
     ap.add_argument("--yes", action="store_true",
                    help="skip the confirmation prompt")
     args = ap.parse_args()

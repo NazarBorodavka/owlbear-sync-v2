@@ -124,8 +124,18 @@ def to_bits(cb):
 import json
 import os
 
+# Deliberately NOT in a "data" directory. The codebook is a shipped
+# CONSTANT -- part of the code, fixed to the printed markers -- not
+# mutable state, so it lives beside the module that reads it.
+#
+# It was briefly in tracker/data/, which collided with the default
+# TRACKER_DATA_DIR: bind-mounting a host directory there for calibration
+# persistence (exactly what ZimaOS/CasaOS does) shadowed this file and
+# the app died at startup with FileNotFoundError. Named volumes hid the
+# bug by copying image contents in on first mount; bind mounts do not.
+# Keep shipped constants and user state in separate trees.
 _CODEBOOK_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "codebook.json")
+    os.path.dirname(os.path.abspath(__file__)), "codebook_data.json")
 
 _cached = None
 
