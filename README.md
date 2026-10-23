@@ -210,12 +210,16 @@ actually deploy".
 
 ### ZimaOS / CasaOS
 
-Pushes to `master` publish to GHCR and notify the
-`owlbear-sync-store` repo, which is what makes ZimaOS show
-*Update available* instead of needing a manual reinstall. v2 dispatches
-`new-image-v2` (v1 uses `new-image`) and needs its own store entry; the
-store repo must have a handler for that event before the update path
-works.
+**See [docs/DEPLOY-ZIMAOS.md](docs/DEPLOY-ZIMAOS.md)** for the full
+walkthrough: GHCR visibility, both install paths, first-run calibration
+order, printing markers on the host, and troubleshooting.
+
+In short: pushes to `master` publish to GHCR and notify the
+`owlbear-sync-store` repo, which is what makes ZimaOS show *Update
+available* instead of needing a manual reinstall. v2 dispatches
+`new-image-v2` (v1 uses `new-image`) and has its own store entry under
+`Apps/OwlbearTrackerV2`, with a distinct app id, so it installs
+*alongside* v1 rather than replacing it.
 
 ---
 
@@ -243,8 +247,14 @@ persisted separately** — redoing one does not disturb the others, which
 ## Owlbear Rodeo extension
 
 Add `http://<host>:5000/extension/manifest.json` as a custom extension in
-Owlbear Rodeo. (Owlbear must be able to reach that URL — for play outside
-your LAN it needs to be exposed, e.g. via a tunnel.)
+Owlbear Rodeo.
+
+Expect this to need HTTPS: Owlbear Rodeo is served over `https://`, and
+browsers block a secure page from loading `http://` subresources as mixed
+content, so a plain LAN IP will most likely be refused. Putting TLS in
+front of it — a Cloudflare Tunnel, Tailscale Serve, or any reverse proxy
+with a cert — resolves that and also covers playing from outside your
+LAN. See [docs/DEPLOY-ZIMAOS.md](docs/DEPLOY-ZIMAOS.md).
 
 In the extension panel, map each scene token to a tracked marker id.
 Mappings are stored in **scene metadata**, so they survive reloads and
