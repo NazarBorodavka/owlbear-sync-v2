@@ -35,6 +35,11 @@ class Track:
         self.px_per_mm = px_per_mm
         self.marker_id = None
         self.evidence = {}          # marker_id -> accumulated weight
+        # marker_id -> best single-frame margin ever recorded for it.
+        # Separate from accumulated evidence on purpose -- see
+        # add_evidence() and _resolve_collisions() for why tenure and
+        # peak quality need to be tracked independently.
+        self.best_margin = {}
         self.hits = 1
         self.misses = 0
         self.created = now
@@ -138,6 +143,13 @@ class Track:
                 del self.evidence[k]
         if marker_id is not None and weight > 0:
             self.evidence[marker_id] = self.evidence.get(marker_id, 0.0) + weight
+            # NOT decayed, and deliberately a running max rather than the
+            # latest reading: this is "how confidently has this track EVER
+            # read this id", which a long run of mediocre-but-consistent
+            # reads should not be able to erase. See _resolve_collisions()
+            # for why that distinction is load-bearing.
+            self.best_margin[marker_id] = max(
+                self.best_margin.get(marker_id, 0.0), weight)
             self.last_decode = now
 
     def best_identity(self, min_evidence, switch_ratio):
@@ -347,7 +359,23 @@ class Tracker:
         """No two tracks may hold the same identity at once. The weaker
         claim is dropped rather than both being left ambiguous, but the
         loser keeps being TRACKED -- it just stops being reported until it
-        earns an identity again."""
+        earns an identity again.
+
+        Ranked by best-ever single-frame margin FIRST, accumulated
+        evidence only as a tiebreak -- not the other way round. Measured
+        against real footage: a track seeded early (e.g. the very first
+        full-frame scan) from a marginal, repeatedly-misread patch of
+        background texture accumulates a large total just by surviving
+        many frames, each individually weak. A real marker discovered
+        later starts from zero and, ranked on raw accumulated evidence
+        alone, can mathematically never catch up -- it loses every
+        collision from birth, which (combined with Tracker's own
+        max_unconfirmed_s pruning) gets it deleted before it can ever
+        accumulate enough history to compete on those terms. But its
+        single reading is typically far HIGHER quality (a real marker
+        decisively beats every other codeword) than anything the
+        phantom has ever produced, which is exactly the signal tenure-
+        based ranking was throwing away."""
         by_id = {}
         for t in self.tracks:
             if t.marker_id is None:
@@ -356,7 +384,8 @@ class Tracker:
         for mid, group in by_id.items():
             if len(group) < 2:
                 continue
-            group.sort(key=lambda t: (t.evidence.get(mid, 0.0), -t.misses),
+            group.sort(key=lambda t: (t.best_margin.get(mid, 0.0),
+                                      t.evidence.get(mid, 0.0), -t.misses),
                        reverse=True)
             for loser in group[1:]:
                 loser.evidence.pop(mid, None)
