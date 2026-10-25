@@ -434,45 +434,94 @@ both apps; `index.json` on the published `gh-pages` branch lists both
 `com.nazarborodavka.owlbearsync` and `com.nazarborodavka.owlbearsync.v2`
 with the correct pinned image tag.
 
-### 4.4 NOT verified — real camera, real markers, real table
+### 4.4 Real camera, real markers, real table — now verified, and it found 3 real bugs
 
-**Nothing listed in §4.1-4.3 has been run against an actual camera
-pointed at an actual printed marker on an actual table.** Every
-tracking number quoted anywhere in this project's docs comes from
-synthetic rendering. This is the single most important caveat to carry
-forward. Specifically unverified:
+**As of 2026-10-26, this gap is closed.** `tools/record_rtsp.py` (new)
+records straight from the camera to a dev machine over the network —
+`ffmpeg -c copy`, no SD card detour — and all 7 clip types
+`docs/VALIDATION.md` asks for (still, slow, fast, occluded, crossing,
+map-change, clutter) were recorded against the real Reolink E1 Zoom at
+its real 100cm mount, real projector running, and replayed through the
+unmodified production pipeline via `tools/replay.py`.
+
+**It immediately justified the whole validation-corpus effort**: three
+real, previously-unknown bugs were found that zero synthetic tests had
+caught, because none of the synthetic models produce the specific
+conditions that triggered them. All three are fixed, verified against
+the exact clips that exposed them, and the full synthetic suite (all 12
+test files) still passes:
+
+1. **Unbounded phantom-track growth under motion blur** (fix
+   `b76f1bd`). `detect()` could return bit-identical duplicate
+   detections for one blurred marker; the extra one span­ned a track
+   that lost its first identity collision and then could never be
+   pruned by the existing age-based rule, because it kept being
+   geometrically re-matched by proximity alone. Reached 1400+ phantom
+   tracks and 11+ seconds/frame within 170 frames of one clip. Fixed by
+   deduplicating `detect()`'s own output, refusing to spawn a new track
+   from a detection that merely lost a geometric race for an existing
+   one, and pruning any track that goes `max_unconfirmed_s=1.5s`
+   without ever holding a confirmed identity.
+2. **Cross-frame identity teleportation** (fix `b76f1bd`). The
+   identity-rescue match ("a decoded id is a positive match, safe to
+   accept at ANY distance" — meant for a token picked up and moved) was
+   being triggered by weak, marginal misreads of background texture,
+   silently relocating an existing, correctly-tracked token across the
+   entire frame. Fixed by requiring both the rescue match and new-track
+   creation to clear `uncorroborated_min_margin=0.45`, well above the
+   decoder's own (possibly calibration-loosened) gate — a claim made
+   with no corroborating geometry needs more evidence than one made
+   near where a token is already believed to be.
+3. **Collision resolution favoured tenure over quality** (fix
+   `dcca80d`), found immediately after fixing #2: a track seeded early
+   (e.g. the very first full-frame scan) from a marginal, repeatedly-
+   misread patch of background texture kept winning every identity
+   collision against the real marker indefinitely, because
+   `_resolve_collisions()` ranked by total accumulated evidence. A real
+   marker discovered later starts from zero and can mathematically
+   never out-accumulate a long-lived incumbent, even though its own
+   single reading is far higher quality. Verified directly: a real
+   marker reading at peak 0.84 sat undetected for an entire 601-frame
+   clip while a phantom at peak ~0.35 held its id, confirmed by
+   decoding both patches directly. Fixed by tracking each track's best-
+   ever single-frame margin per id and ranking collisions by that
+   first, accumulated evidence only as a tiebreak.
+
+**Result after all three fixes, across all 7 real clips**: 0 identity
+flips, 0 phantom tracks, 6/6 tokens seen together, in every clip.
+Sustainable fps roughly quadrupled on the hardest clips as a direct
+side effect (7.5-9.0fps → 27.4-48.2fps, all now clearing the 15fps
+target) — bounding the phantom population was removing most of the
+per-frame cost, not just a correctness issue.
+
+**What real footage also found that is NOT a software bug**: marker id
+0's physical print quality is measurably the weakest of the 6 —
+lowest mean decode peak (0.806 vs 0.83-0.93 for the others), highest
+circle-fit residual (1.67px vs 0.42-1.08), and the only marker observed
+losing detection for multi-second stretches **while sitting
+motionless**. This is specific to that one printed marker (bad print,
+local lighting, or table-surface flatness at its position) — no code
+change addresses it. Recommend reprinting or repositioning marker 0
+before committing to it permanently (e.g. gluing a miniature on).
+
+Still genuinely unverified — real footage closed the tracking-accuracy
+gap, not these:
 
 1. Whether pigment ink actually stays opaque under this specific
    camera's IR illumination (§3.8) — derived from published spectral
-   data, not measured.
-2. Whether the detector/decoder's accuracy numbers hold against real
-   sensor noise, real lens characteristics, real projector brightness,
-   and real motion blur characteristics (the synthetic blur model is
-   physically derived but is still a model).
-3. Whether 100cm mount height (current hardware setup) gives usable
-   px/mm — `RingGeometry.min_px_per_mm()` and the play-area calibration
-   UI will report the *actual* measured px/mm once a real camera is
-   calibrated, but no one has done that yet. The README recommends
-   ~70cm as more comfortable, computed from the Reolink's sensor specs,
-   not measured.
-4. Real RTSP stream behavior from the actual Reolink E1 Zoom (capture.py
-   carries forward three proven-in-production v1 fixes — FFmpeg
-   analyzeduration/probesize tuning, UDP transport, thread-join-before-
-   release — but hasn't been exercised against this camera in v2's own
-   codebase).
+   data, not measured. All 7 recorded clips were in whatever mode the
+   camera was in when recorded (not confirmed forced-IR) — camera mode
+   itself is still unverified as a separate item.
+2. Mount height: 100cm measured at **3.5px/mm**, which does clear
+   `RingGeometry.min_px_per_mm()` (≈2.5px/mm for the current geometry)
+   with real margin — so 100cm is confirmed usable, not just assumed.
 
-`tools/replay.py` exists specifically to close this gap: record real
-footage once, replay it through the exact production pipeline, score it
-with **no ground-truth labeling needed** (identity flips, phantom
-tracks, id churn, and frame timing are all self-evident from the track
-log alone — a real token never becomes a different token, so any id
-change mid-track is definitionally a bug). `tests/test_replay.py`
+`tools/replay.py` needs no ground-truth labeling — identity flips,
+phantom tracks, id churn, and frame timing are all self-evident from
+the track log alone (a real token never becomes a different token, so
+any id change mid-track is definitionally a bug). `tests/test_replay.py`
 validates the harness itself against a synthetic 6-token recording
-(encoded to a real mp4, codec compression included) before trusting it
-on real footage — a harness bug pointed at real footage would be
-indistinguishable from a tracker regression otherwise.
-
-**This is the highest-priority next step.** See §5.
+before trusting it on real footage.
 
 ### 4.5 Deployment-specific verification state
 
@@ -498,53 +547,44 @@ indistinguishable from a tracker regression otherwise.
 
 ## 5. Next steps, in priority order
 
-1. **Record and replay real footage.** This is the standing commitment
-   and the biggest gap between "well-tested" and "known to work."
-   `docs/VALIDATION.md` lists 7 clip types worth recording (still, slow,
-   fast, occluded, crossing, map-change, clutter) with what each tests.
-   Command:
-   ```bash
-   python tools/replay.py recording.mp4 --calibration data/calibration \
-       --expect-tokens 6 --annotate annotated.mp4 --json report.json
-   ```
-   Needs a play-area calibration to already exist for that camera
-   position (replay has no scale without it — refuses rather than
-   guessing). Compare the report against §4.1's synthetic numbers; a
-   real clip that fails is more valuable than one that passes, because
-   it's a concrete test case.
+1. **Reprint or reposition marker id 0.** The one open item real
+   footage surfaced that code can't fix — see §4.4. Measurably the
+   weakest of the 6 printed markers; lost detection for multi-second
+   stretches even motionless. Do this before gluing a miniature onto
+   it, since that makes it expensive to redo.
 
 2. **Physically verify the pigment-vs-dye ink assumption.** Print one
    marker (`tools/generate_markers.py`), photograph it under the
    camera's forced-IR mode, confirm the detection ring and code band
    actually show the expected contrast. If this fails, the whole
    printing approach needs a different ink/printer recommendation before
-   the user reprints a full marker set.
+   the user reprints a full marker set. Still unverified — see §4.4.
 
-3. **Add `STORE_DISPATCH_TOKEN` to the `owlbear-sync-v2` repo.** Five
-   minutes, prevents a confusing "it's not updating" report later.
-   Settings → Secrets and variables → Actions → New repository secret.
+3. **Add `STORE_DISPATCH_TOKEN` to the `owlbear-sync-v2` repo** if not
+   already done (status not re-checked this session). Five minutes,
+   prevents a confusing "it's not updating" report later. Settings →
+   Secrets and variables → Actions → New repository secret.
 
-4. **Confirm the actual ZimaOS install completes** and walk the user
-   through first-run calibration (`docs/DEPLOY-ZIMAOS.md` §3) if not
-   already done — in particular the play-area step, since the resulting
-   px/mm determines whether the 100cm mount height is actually usable
-   or needs to come down to ~70cm.
+4. **Confirm the actual ZimaOS install is current** with the fixes
+   from this session (3 tracker commits since the last known-deployed
+   state) and re-run calibration if the camera position changed.
 
-5. **VAAPI/OpenCL hardware decode** — v1 has this (optional, env-flag
+5. **Record more real footage periodically**, especially after any
+   future tracker change — `tools/record_rtsp.py` +
+   `tools/replay.py` found 3 real, previously-unknown bugs on the
+   *first* pass (§4.4) that zero synthetic tests caught. This project's
+   own lesson from that: treat it as an ongoing regression check, not
+   a one-time milestone that's now "done".
+
+6. **VAAPI/OpenCL hardware decode** — v1 has this (optional, env-flag
    gated, automatic CPU fallback) for Intel iGPU hosts. v2 doesn't have
-   it yet. Not needed unless CPU usage turns out to be a problem on the
-   real host (Razer Book 13 — check `docker stats` under real load
-   before deciding this is worth doing).
+   it yet. Less urgent now that the phantom-track fix roughly
+   quadrupled real-clip fps on its own (§4.4) — check `docker stats`
+   under real load before deciding this is still worth doing.
 
-6. **WebSocket push instead of polling** for `/api/tokens` — noted but
+7. **WebSocket push instead of polling** for `/api/tokens` — noted but
    not started. Current polling is simple and tested; only worth doing
    if latency or request volume becomes an actual measured problem.
-
-7. **If replay against real footage (step 1) surfaces failures that
-   synthetic testing didn't catch** — this is likely, since §4.4 lists
-   several real-world factors the synthetic models can't capture — that
-   becomes the real priority list, superseding everything above except
-   the ink check.
 
 ### Explicitly NOT a next step unless the user asks
 
