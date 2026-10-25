@@ -40,6 +40,11 @@ class Track:
         self.created = now
         self.last_seen = now
         self.last_decode = 0.0
+        # Seconds since this track last held a CONFIRMED identity (zero
+        # at birth, not just after one is lost -- a track that never
+        # confirms at all is gated the same way as one that lost its id,
+        # by design; see Tracker.step()'s pruning rule).
+        self.unconfirmed_s = 0.0
         # Speed at the moment of the last real detection, undamped. The
         # live velocity gets damped while coasting (see predict), so it is
         # useless for deciding how far away to search for a token that was
@@ -154,7 +159,8 @@ class Tracker:
     def __init__(self, geom, px_per_mm,
                  max_coast_s=2.0, min_evidence=1.0, switch_ratio=1.6,
                  evidence_decay_per_s=0.5, confirm_hits=2,
-                 max_report_sigma_mm=12.0):
+                 max_report_sigma_mm=12.0, max_unconfirmed_s=1.5,
+                 uncorroborated_min_margin=0.45):
         self.geom = geom
         self.px_per_mm = px_per_mm
         self.base_px = geom.r_out * px_per_mm
@@ -164,6 +170,44 @@ class Tracker:
         self.evidence_decay_per_s = evidence_decay_per_s
         self.confirm_hits = confirm_hits
         self.max_report_sigma_px = max_report_sigma_mm * px_per_mm
+        # Two places below trust a decoded id WITHOUT any nearby existing
+        # track to corroborate it -- the identity-rescue match (accepts at
+        # ANY distance) and new-track creation (nothing to compare against
+        # yet). Both need MORE evidence than an ordinary local match, not
+        # the same bare-minimum gate the decoder itself uses for a
+        # detection that is already physically close to a track believed
+        # to be that token. Measured against real footage: a weak-margin
+        # marker (id 0 in this project's own printed set, see HANDOFF) was
+        # occasionally misread off background texture (bare branches, a
+        # projected map's gradient) elsewhere in the frame. Before this
+        # fix, that first teleported an EXISTING track across the whole
+        # image via the rescue path; closing that only moved the same
+        # failure to the new-track path instead -- a phantom id-0 track
+        # kept being born wherever the spurious reading occurred. Fixing
+        # only one of the two was tried and measurably insufficient.
+        # uncorroborated_min_margin is independent of whatever the
+        # Matcher's own (possibly loosened-by-calibration) gate is, by
+        # design -- a claim made with no corroborating geometry is a much
+        # higher-stakes claim than "this detection near where I already
+        # expect the token to be is it", and should need correspondingly
+        # stronger evidence regardless of how permissively the decoder
+        # itself has been tuned.
+        self.uncorroborated_min_margin = uncorroborated_min_margin
+        # Bounds a real, measured leak: a collision loser keeps being
+        # tracked (by design -- it may yet earn its OWN identity if it is
+        # a genuine second token, see _resolve_collisions), and a track
+        # that stays geometrically glued to the winner keeps refreshing
+        # last_seen every frame just by proximity, so max_coast_s's
+        # age-since-last-MATCHED check never touches it. Measured against
+        # real footage: motion blur occasionally splits one real marker's
+        # detection into two, the extra one is born already decoding
+        # correctly, loses its very first collision, and then never has
+        # an independent existence to ever win one again -- one per bad
+        # frame compounds to 1400+ phantom tracks and 11+ seconds/frame
+        # within 170 frames. This bounds the population regardless of
+        # root cause: any track with no CONFIRMED identity for this long
+        # is dropped, win or never-won.
+        self.max_unconfirmed_s = max_unconfirmed_s
         self.tracks = []
         self._last_t = None
 
@@ -203,11 +247,20 @@ class Tracker:
         # a geometric gate cannot know that a token was picked up and put
         # down across the table, but the printed code can. This is what
         # lets a fast flick be recovered in one frame instead of waiting
-        # for the old track to expire and a new one to earn its identity,
-        # and it is safe precisely because it requires a positive id match
-        # rather than mere proximity.
+        # for the old track to expire and a new one to earn its identity.
+        #
+        # Gated on margin, not just "decoded at all": a genuinely relocated
+        # marker is still the same well-printed ring, so it decodes with
+        # its usual healthy margin -- requiring one here costs that real
+        # case nothing. What it stops is a WEAK, barely-gate-passing
+        # decode (the marginal end of a marker's own quality range, or a
+        # coincidental partial match on background texture) from being
+        # trusted to relocate a track across the whole frame, which is a
+        # far stronger claim than an ordinary nearby match and was
+        # otherwise accepted on the same bare minimum the decoder itself
+        # uses for everything else.
         for di, (mid, margin) in enumerate(decodes):
-            if di in used_d or mid is None:
+            if di in used_d or mid is None or margin < self.uncorroborated_min_margin:
                 continue
             for ti, t in enumerate(self.tracks):
                 if ti in used_t or t.marker_id != mid:
@@ -234,15 +287,32 @@ class Tracker:
                 t.note_missed(dt)
                 t.add_evidence(None, 0.0, decay, now)
 
+        # A detection within gate range of some EXISTING track, but that
+        # lost the greedy nearest-match race for it, is contested space --
+        # not a new object. Measured directly against real footage: under
+        # motion blur, the gradient-vote accumulator can briefly split one
+        # real, already-tracked marker into two nearby peaks. The runner-up
+        # peak still decodes correctly (it is sampling almost the same
+        # code band), so without this check it is eligible to found a
+        # brand-new track every single frame the blur persists -- which is
+        # exactly what produced 1400+ phantom tracks and an 11+ second
+        # frame time from one dragged token. gated_d reuses the SAME
+        # gate_radius computation the association step already did, so
+        # this costs nothing extra and stays exactly consistent with it.
+        gated_d = {di for (_, di, _) in pairs}
+
         for di, d in enumerate(detections):
-            if di in used_d:
+            if di in used_d or di in gated_d:
                 continue
             mid, margin = decodes[di]
             # A new track is only born from a detection that already reads
-            # as a valid marker. Without this an arbitrary round object
-            # becomes a track and then a visible phantom token, which is
-            # precisely what happened in v1.
-            if mid is None:
+            # as a valid marker, and (see Tracker.__init__) reads it with
+            # enough margin that nothing is corroborating it except the
+            # decode itself. Without the mid check an arbitrary round
+            # object becomes a track and then a visible phantom token,
+            # which is precisely what happened in v1; without the margin
+            # check, a weak/marginal false decode becomes one instead.
+            if mid is None or margin < self.uncorroborated_min_margin:
                 continue
             t = Track(d["x"], d["y"], d.get("px_per_mm", self.px_per_mm), now)
             t.add_evidence(mid, max(0.0, margin), 1.0, now)
@@ -254,6 +324,14 @@ class Tracker:
         for t in self.tracks:
             t.marker_id = t.best_identity(self.min_evidence, self.switch_ratio)
         self._resolve_collisions()
+
+        for t in self.tracks:
+            if t.marker_id is not None:
+                t.unconfirmed_s = 0.0
+            else:
+                t.unconfirmed_s += dt
+        self.tracks = [t for t in self.tracks
+                       if t.unconfirmed_s <= self.max_unconfirmed_s]
 
         # Stop REPORTING a track whose position has become too uncertain to
         # be worth drawing, while still keeping it alive internally so it

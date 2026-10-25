@@ -192,7 +192,32 @@ class Detector:
             out_i = self.refine_at(img, x * self.coarse, y * self.coarse, vote=v)
             if out_i is not None:
                 out.append(out_i)
-        return out
+        return self._dedup(out)
+
+    def _dedup(self, out, tol_px=4.0):
+        """Merges candidates whose REFINED centres land on top of each
+        other. Motion blur can spread one real marker's vote accumulator
+        wide enough that find_peaks reports two coarse seeds for it; both
+        then independently converge in refine_at()'s subpixel circle fit
+        to the SAME true ring edge, so detect() returns one physical
+        marker as two (sometimes bit-for-bit identical) detections.
+
+        Measured against real footage: this is what let one dragged,
+        motion-blurred token spawn a new phantom track almost every
+        frame, reaching 1400+ tracks and an 11+ second frame time within
+        170 frames of a 150-frame clip. tol_px is small on purpose --
+        two genuinely distinct 38mm tokens are well over a hundred pixels
+        apart even touching, so this cannot merge two real markers."""
+        kept = []
+        for cand in out:
+            dup = next((k for k in kept
+                       if np.hypot(cand["x"] - k["x"], cand["y"] - k["y"]) <= tol_px),
+                      None)
+            if dup is None:
+                kept.append(cand)
+            elif cand["resid"] < dup["resid"]:
+                kept[kept.index(dup)] = cand
+        return kept
 
     def search_near(self, img, cx, cy, radius_px):
         """Vote-based search restricted to a window around a prediction.
