@@ -1,7 +1,7 @@
 """RTSP camera capture: a background-threaded reader exposing the single
 latest frame, decoupled from however fast the processing loop consumes it.
 
-Three fixes here are carried forward from hard-won v1 operational
+Four fixes here are carried forward from hard-won v1 operational
 experience, not re-derived from scratch -- they are low-level RTSP/
 threading correctness, not a settings/UI design decision, so there is
 nothing to "start fresh" about:
@@ -27,6 +27,18 @@ nothing to "start fresh" about:
      this is a correctness bug, not a style preference, and is exactly
      the kind of thing that looks fine until it crashes under a
      reconnect at the wrong moment.
+  4. cap.read() failing must eventually RECREATE the VideoCapture, not
+     just retry read() on the same one. Measured against a real Reolink
+     E1 Zoom over RTSP/UDP: once FFmpeg's demuxer loses sync -- a dropped
+     keyframe, a brief Wi-Fi hiccup, the camera's own momentary rekey --
+     read() can return False forever with no exception, and the earlier
+     version of this loop just slept and retried on the dead object
+     indefinitely. That looked like "the camera connection keeps
+     dropping" and "frames stop updating" from the dashboard, and only a
+     full container restart recovered it. Safe to reopen from inside
+     this same thread: nothing else touches self.cap except release(),
+     and release() only runs after this thread has already been joined
+     (fix 3, above) -- see _reopen()'s docstring.
 """
 import os
 import time
@@ -44,15 +56,27 @@ import cv2  # noqa: E402  (must follow the env var above)
 
 
 class RtspCapture:
-    def __init__(self, url, stale_after_s=5.0):
+    def __init__(self, url, stale_after_s=5.0, reconnect_after_s=3.0,
+                 reconnect_backoff_s=2.0):
         self.url = url
         self.stale_after_s = stale_after_s
+        # Proactive self-heal fires BEFORE the external staleness check
+        # (stale_after_s) does, so a caller polling read() ideally never
+        # even observes the drop -- reconnect_after_s must stay below
+        # stale_after_s for that ordering to hold.
+        assert reconnect_after_s < stale_after_s, (
+            "reconnect_after_s must be shorter than stale_after_s, or "
+            "callers will see a stale/disconnected stream before this "
+            "class has even tried to recover it")
+        self.reconnect_after_s = reconnect_after_s
+        self.reconnect_backoff_s = reconnect_backoff_s
         self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         self.frame_buffer = collections.deque(maxlen=1)
         self.last_frame_time = 0.0
         self.frame_available = threading.Event()
         self.is_running = True
         self.fps_measured = 0.0
+        self.reconnects = 0
 
         # CAP_PROP_BUFFERSIZE is not honoured by OpenCV's FFmpeg backend for
         # network streams -- left here as a harmless no-op in case a future
@@ -63,16 +87,41 @@ class RtspCapture:
         self.thread = threading.Thread(target=self._reader, daemon=True)
         self.thread.start()
 
+    def _reopen(self):
+        """Tears down and recreates the VideoCapture on the SAME thread
+        that reads it, so this cannot race release() (see fix 3 in the
+        module docstring) -- release() is only called after this thread
+        has already been joined, and nothing else ever touches self.cap.
+        """
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+        self.cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.reconnects += 1
+
     def _reader(self):
         frame_count = 0
         last_report = time.time()
+        last_success = time.time()
         while self.is_running:
             ret, frame = self.cap.read()
             if not ret:
-                time.sleep(0.1)
+                if time.time() - last_success >= self.reconnect_after_s:
+                    self._reopen()
+                    # Give the fresh connection its own grace window
+                    # before considering IT stuck, and a short pause so a
+                    # genuinely unreachable camera does not get hammered
+                    # with VideoCapture() calls in a tight loop.
+                    last_success = time.time()
+                    time.sleep(self.reconnect_backoff_s)
+                else:
+                    time.sleep(0.1)
                 continue
             self.frame_buffer.append(frame)
             self.last_frame_time = time.time()
+            last_success = self.last_frame_time
             self.frame_available.set()
 
             frame_count += 1

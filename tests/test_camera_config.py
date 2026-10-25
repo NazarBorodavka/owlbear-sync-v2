@@ -35,6 +35,7 @@ class _StubCapture:
     def __init__(self, url, stale_after_s=5.0):
         self.url = url
         self.is_running = True
+        self.reconnects = 0
         _StubCapture.instances.append(self)
 
     def wait_for_frame(self, timeout=1.0):

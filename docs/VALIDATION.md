@@ -24,6 +24,7 @@ python3 tests/test_print_roundtrip.py  # the real printable SVG decodes (needs r
 python3 tests/test_runtime.py          # frame processing, pipeline rebuild
 python3 tests/test_app.py              # web API surface
 python3 tests/test_replay.py           # the recorded-footage replay harness
+python3 tests/test_capture.py          # RTSP reconnect behaviour
 ```
 
 CI runs all of these before publishing an image, so a broken tracker
@@ -86,6 +87,20 @@ homography round-trips a known point to 0.04mm; all three calibration
 stages (lens, play-area, detector thresholds) persist independently and
 survive a fresh process reload, and re-running any ONE stage does not
 disturb the others.
+
+**test_capture.py** -- found against the real deployed hardware, not in
+review: RtspCapture's reader loop used to retry `cap.read()` on the same
+VideoCapture object forever once FFmpeg's RTSP/UDP demuxer lost sync, with
+no exception and no recovery short of restarting the container. Surfaced
+as "the camera connection keeps dropping" and "frames stop updating".
+cv2.VideoCapture is stubbed with a fake that scripts its FIRST instance to
+fail forever and every instance after that to succeed immediately, so a
+test can tell "recovered because `_reopen()` actually constructed a new
+capture" apart from "recovered because the read happened to come back on
+its own" -- the latter would not be testing the fix at all. Also checks a
+single brief failure does NOT trigger a reopen (that is UDP transport's
+normal, tolerated cost), and that a genuinely unreachable camera gets
+rate-limited reconnect attempts rather than a busy loop.
 
 ## Known-good numbers (re-derive, don't trust stale copies)
 

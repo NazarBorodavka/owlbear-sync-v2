@@ -229,6 +229,12 @@ class TrackerRuntime:
             return {
                 "tokens": list(self._latest_tokens),
                 "play_area_mm": play_area_mm,
+                # Read directly off the live capture rather than mirrored
+                # into _stats: it is a simple monotonic counter, and this
+                # keeps it accurate even across a capture restart. Rising
+                # steadily points at a flaky RTSP link (or a camera that
+                # reboots itself); see RtspCapture._reopen()'s docstring.
+                "reconnects": self.capture.reconnects if self.capture else 0,
                 **self._stats,
             }
 
