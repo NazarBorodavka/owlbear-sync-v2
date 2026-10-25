@@ -135,6 +135,14 @@ decode, track or calibration.
        --expect-tokens 6 --annotate annotated.mp4 --json report.json
    ```
 
+   `tools/record_rtsp.py` records straight from the camera to this
+   machine over the network -- no detour through the camera's SD card:
+
+   ```bash
+   python tools/record_rtsp.py --url rtsp://user:pass@<camera-ip>:554/h264Preview_01_main \
+       --label still --duration 30
+   ```
+
    To record a useful corpus, with the projector running and the camera
    in its final mounted position and settings:
 

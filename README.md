@@ -291,10 +291,18 @@ hardware.
 
 ### Scoring real footage
 
-Record the camera, then replay it through the production pipeline:
+Record straight from the camera to this machine over the network --
+`-c copy`, no re-encode, so the recording is the camera's real signal:
 
 ```bash
-python tools/replay.py recording.mp4 --calibration data/calibration \
+python tools/record_rtsp.py --url rtsp://user:pass@<camera-ip>:554/h264Preview_01_main \
+    --label still --duration 30
+```
+
+Then replay it through the production pipeline:
+
+```bash
+python tools/replay.py recordings/still_<timestamp>.mp4 --calibration data/calibration \
     --expect-tokens 6 --annotate annotated.mp4
 ```
 
