@@ -8,3 +8,12 @@ __pycache__/
 tracker/data/
 data/
 markers/
+
+# Real camera footage and replay.py/tools/record_rtsp.py output -- large,
+# machine-specific, and exactly what a validation corpus is NOT meant to
+# be checked in as (it needs to stay current with the real camera/table,
+# not frozen at whatever state it was recorded in).
+recordings/
+results/
+
+.idea/
