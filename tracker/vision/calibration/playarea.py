@@ -92,5 +92,14 @@ class PlayAreaCalibration:
             verdict = "thin margin; expect more refusals under occlusion/motion blur"
         else:
             verdict = "BELOW the validated minimum -- raise zoom or lower the camera"
+        # Per-frame cost scales with the PIXEL COUNT of the rectified
+        # image, which is quadratic in px_per_mm -- so this slider is
+        # also the main performance dial, and nothing in the UI said so.
+        # Reported relative to the minimum usable scale, which is the
+        # cheapest setting the decoder will still tolerate.
+        out_px = (self.width_mm * self.px_per_mm) * (self.height_mm * self.px_per_mm)
+        min_out_px = (self.width_mm * min_px) * (self.height_mm * min_px)
         return {"px_per_mm": self.px_per_mm, "margin": margin, "verdict": verdict,
-                "coverage_cm": (self.width_mm / 10.0, self.height_mm / 10.0)}
+                "coverage_cm": (self.width_mm / 10.0, self.height_mm / 10.0),
+                "megapixels": out_px / 1e6,
+                "cost_vs_min": out_px / max(min_out_px, 1.0)}

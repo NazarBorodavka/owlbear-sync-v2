@@ -231,7 +231,14 @@ async function updateScaleHint() {
       method: "POST",
       body: JSON.stringify({ corners: cornersToNative(), width_mm: widthMm, height_mm: heightMm, px_per_mm: pxPerMm }),
     });
-    scaleHint.textContent = `${pxPerMm.toFixed(1)} px/mm, ${result.coverage_cm[0].toFixed(0)}x${result.coverage_cm[1].toFixed(0)}cm -- ${result.verdict}`;
+    // Show the processing cost alongside the accuracy verdict: this
+    // slider is quadratic in per-frame work, and on a modest server it
+    // is the most effective speed control available.
+    scaleHint.textContent =
+      `${pxPerMm.toFixed(1)} px/mm, ${result.coverage_cm[0].toFixed(0)}x` +
+      `${result.coverage_cm[1].toFixed(0)}cm -- ${result.verdict}` +
+      ` | ${result.megapixels.toFixed(1)}MP/frame, ` +
+      `${result.cost_vs_min.toFixed(1)}x the cheapest usable setting`;
   } catch (e) {
     scaleHint.textContent = `${pxPerMm.toFixed(1)} px/mm (${e.message})`;
   }
