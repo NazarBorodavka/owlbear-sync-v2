@@ -107,6 +107,10 @@ class TrackerRuntime:
         # meaning "camera width" -- which put every clicked corner at a
         # quarter of its true position and produced a badly wrong crop.
         self._preview_src = {}
+        # When the cached preview was produced. A cache with no
+        # staleness check is indistinguishable from a working feed right
+        # up until it silently freezes.
+        self._preview_at = 0.0
         # Rolling per-stage cost for the stages OUTSIDE the pipeline.
         # Without these the dashboard could only account for detect +
         # decode + track, which on a deployed server added up to 72ms
@@ -217,14 +221,26 @@ class TrackerRuntime:
             if not ok:
                 continue
 
+            # Count every processed frame immediately, and report fps
+            # from a short rolling window.
+            #
+            # The previous form accumulated into a local and flushed both
+            # the counter and the rate only once 10s had elapsed, using
+            # `now` -- a frame timestamp -- as the clock. On a deployed
+            # server that reported 2.5fps while the frame counter was
+            # demonstrably advancing at ~14fps: a 5x under-read that made
+            # a working camera look broken and sent the investigation
+            # after the wrong thing entirely. A statistic nobody can
+            # trust is worse than no statistic.
             frame_count += 1
-            elapsed = now - last_report
-            if elapsed >= 10.0:
+            wall = time.time()
+            elapsed = wall - last_report
+            if elapsed >= 1.0:
                 with self._lock:
                     self._stats["fps"] = frame_count / elapsed
                     self._stats["frames"] += frame_count
                 frame_count = 0
-                last_report = now
+                last_report = wall
 
     def process_frame(self, raw, now=None):
         """Runs one raw camera frame through rectify -> pipeline ->
@@ -245,6 +261,21 @@ class TrackerRuntime:
             # feed the live preview the operator calibrates against, so
             # this is a healthy connected state with nothing to track --
             # not an error.
+            #
+            # The preview MUST still be refreshed here. It used to be
+            # updated only further down, after the pipeline had run,
+            # which created a catch-22 on a fresh install: no play-area
+            # calibration means no pipeline, no pipeline means the
+            # preview cache is never written, and the feed then served
+            # whatever stale frame happened to be cached -- observed on
+            # a deployed server as a live-looking image that was in fact
+            # hours old, on the exact screen whose entire purpose is
+            # clicking four corners on a CURRENT frame.
+            try:
+                gray = raw if raw.ndim == 2 else _bgr_to_gray(raw)
+                self._cache_preview_raw(gray)
+            except Exception:
+                pass
             with self._lock:
                 self._latest_tokens = []
                 self._stats["last_frame_time"] = now
@@ -332,6 +363,26 @@ class TrackerRuntime:
             }
 
     PREVIEW_W = 960
+    PREVIEW_MAX_AGE_S = 2.0
+
+    def _cache_preview_raw(self, gray):
+        """Refresh ONLY the raw-camera preview. Used on the
+        not-yet-calibrated path, where there is no rectified image and no
+        tracks, but the operator still needs to see live video."""
+        if _cv2 is None:
+            return
+        h, w = gray.shape[:2]
+        arr = np.clip(gray, 0, 255).astype(np.uint8)
+        if w > self.PREVIEW_W:
+            sc = self.PREVIEW_W / float(w)
+            arr = _cv2.resize(arr, (int(w * sc), int(h * sc)),
+                              interpolation=_cv2.INTER_AREA)
+        with self._lock:
+            self._preview_raw = arr
+            self._preview_tracks = []
+            self._preview_at = time.time()
+            self._preview_src = dict(self._preview_src)
+            self._preview_src["raw"] = [int(w), int(h)]
 
     def _cache_preview(self, gray, rectified, reported, pipe):
         """Keep a small copy of what was just processed, for the dashboard.
@@ -370,6 +421,7 @@ class TrackerRuntime:
                 self._preview_raw = raw_small
                 self._preview_tracks = tracks
                 self._preview_scale = scale
+                self._preview_at = time.time()
                 self._preview_src = {
                     "rect": [int(rectified.shape[1]), int(rectified.shape[0])],
                     "raw": [int(gray.shape[1]), int(gray.shape[0])],
@@ -395,6 +447,11 @@ class TrackerRuntime:
         with self._lock:
             cached = self._preview_raw if view == "raw" else self._preview_rect
             tracks = list(self._preview_tracks)
+            age = time.time() - self._preview_at
+        # A stale cache is worse than no cache: it looks like a working
+        # live feed. Past this age, fall through to reading a fresh frame.
+        if cached is not None and age > self.PREVIEW_MAX_AGE_S:
+            cached = None
         if cached is None:
             if self.capture is None:
                 return None

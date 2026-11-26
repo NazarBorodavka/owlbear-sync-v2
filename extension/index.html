@@ -24,8 +24,21 @@
       camera measures the projected grid and matches it to your token
       base size automatically.
     </p>
-    <button id="autoZoomBtn">Auto-Zoom to Token Size</button>
+    <button id="autoZoomBtn">Auto-Zoom (measure projected grid)</button>
+    <button id="autoZoomCalcBtn">Auto-Zoom (from play-area size)</button>
     <p id="autoZoomStatus" class="hint"></p>
+  </section>
+
+  <section class="panel">
+    <h3>Travel Mode</h3>
+    <p class="hint">
+      Pan or zoom the map without the minis "walking" across it. While
+      travelling, token positions stop being pushed to the scene, so
+      sliding the map under stationary minis cannot drag them through
+      unexplored ground. Turn it off once the new area is in place.
+    </p>
+    <button id="travelBtn">Start travelling</button>
+    <p id="travelStatus" class="hint"></p>
   </section>
 
   <section class="panel">
