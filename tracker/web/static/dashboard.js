@@ -442,7 +442,12 @@ async function refreshDiag() {
     const t = await api("/api/tokens");
     if (t.preview_src) previewSrc = t.preview_src;
     const ms = t.timing_ms || {};
-    const stages = ["t_detect", "t_decode", "t_track"]
+    // Every stage, in pipeline order, INCLUDING the pre-pipeline ones.
+    // Showing only detect/decode/track once made a deployed server look
+    // like it was spending 72ms/frame while actually managing 4.4fps --
+    // 155ms/frame was simply not being counted.
+    const stages = ["t_gray", "t_rectify", "t_detect", "t_decode",
+                    "t_track", "t_preview", "t_total"]
       .filter((k) => ms[k] !== undefined)
       .map((k) => `${k.slice(2)} ${ms[k].toFixed(1)}ms`)
       .join("  ");

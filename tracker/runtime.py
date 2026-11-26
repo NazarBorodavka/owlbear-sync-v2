@@ -107,6 +107,13 @@ class TrackerRuntime:
         # meaning "camera width" -- which put every clicked corner at a
         # quarter of its true position and produced a badly wrong crop.
         self._preview_src = {}
+        # Rolling per-stage cost for the stages OUTSIDE the pipeline.
+        # Without these the dashboard could only account for detect +
+        # decode + track, which on a deployed server added up to 72ms
+        # against an observed 4.4fps -- leaving ~155ms/frame invisible
+        # and the obvious conclusion ("detect is slow") wrong.
+        self._stage_ms = {"gray": 0.0, "rectify": 0.0, "preview": 0.0,
+                          "total": 0.0}
         self._stats = {"fps": 0.0, "frames": 0, "last_frame_time": 0.0,
                        "connected": False, "error": None}
 
@@ -243,7 +250,10 @@ class TrackerRuntime:
                 self._stats["last_frame_time"] = now
             return True
         try:
+            t_all = time.perf_counter()
+            t0 = time.perf_counter()
             gray = raw if raw.ndim == 2 else _bgr_to_gray(raw)
+            t_gray = time.perf_counter() - t0
             # Warp FIRST, promote to float after. Both orders give the
             # same answer to within the camera's own 8-bit quantisation,
             # but warping uint8 moves 1/8th the bytes and lets OpenCV use
@@ -256,12 +266,29 @@ class TrackerRuntime:
             # to one intensity level. Across 2306 decodes on real
             # still/occluded footage: median centre shift 0.03px, p95
             # 0.35px, and ZERO decode disagreements.
+            t0 = time.perf_counter()
             rectified = self.session.rectify(gray)
             if rectified.dtype != np.float64:
                 rectified = rectified.astype(np.float64)
+            t_rect = time.perf_counter() - t0
+
             reported = pipe.process(rectified, now=now)
-            tokens = pipe.tokens_mm(reported)
+
+            t0 = time.perf_counter()
             self._cache_preview(gray, rectified, reported, pipe)
+            t_prev = time.perf_counter() - t0
+            tokens = pipe.tokens_mm(reported)
+
+            # Exponential rolling average: one slow frame should show up
+            # without a single outlier defining the reading forever.
+            a = 0.1
+            with self._lock:
+                m = self._stage_ms
+                m["gray"] = (1-a)*m["gray"] + a*1000*t_gray
+                m["rectify"] = (1-a)*m["rectify"] + a*1000*t_rect
+                m["preview"] = (1-a)*m["preview"] + a*1000*t_prev
+                m["total"] = ((1-a)*m["total"]
+                              + a*1000*(time.perf_counter() - t_all))
         except Exception as e:
             with self._lock:
                 self._stats["error"] = str(e)
@@ -297,7 +324,9 @@ class TrackerRuntime:
                 # only visible symptom on a deployed box is a low fps
                 # number and an access log full of 200s.
                 "preview_src": dict(self._preview_src),
-                "timing_ms": (self.pipeline.timing_report()
+                "timing_ms": ({**self.pipeline.timing_report(),
+                               **{f"t_{k}": v
+                                  for k, v in self._stage_ms.items()}}
                               if self.pipeline is not None else None),
                 **self._stats,
             }
