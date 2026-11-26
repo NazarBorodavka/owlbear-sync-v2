@@ -286,7 +286,8 @@ class Tracker:
                  max_report_sigma_mm=12.0, max_unconfirmed_s=1.5,
                  uncorroborated_min_margin=0.25,
                  predict_publish_s=0.25,
-                 still_hold_s=20.0, still_tol_mm=2.0):
+                 still_hold_s=20.0, still_tol_mm=2.0,
+                 max_step_dt=0.25):
         self.geom = geom
         self.px_per_mm = px_per_mm
         self.base_px = geom.r_out * px_per_mm
@@ -367,6 +368,11 @@ class Tracker:
         # long enough for a token to simply be left alone on the table.
         self.still_hold_s = still_hold_s
         self.still_tol_mm = still_tol_mm
+        # Upper bound on the dt fed to decay/prediction (see step()).
+        # 0.25s is one frame at 4fps -- slower than the system should
+        # ever run, so it never clamps a healthy frame, and it caps the
+        # damage when the host stalls.
+        self.max_step_dt = max_step_dt
         # Bounds a real, measured leak: a collision loser keeps being
         # tracked (by design -- it may yet earn its OWN identity if it is
         # a genuine second token, see _resolve_collisions), and a track
@@ -392,8 +398,26 @@ class Tracker:
         Returns the list of REPORTABLE tracks -- confirmed and identified.
         """
         now = time.monotonic() if now is None else now
-        dt = 0.0 if self._last_t is None else max(1e-3, now - self._last_t)
+        wall_dt = 0.0 if self._last_t is None else max(1e-3, now - self._last_t)
         self._last_t = now
+        # Clamp the dt used for DECAY and PREDICTION.
+        #
+        # Every time-based term here models "how much should my belief
+        # fade while I am not getting fresh confirmation". A frame that
+        # took 1.4s because the host stalled is not evidence that
+        # anything on the table changed -- it means we did not look.
+        # Unclamped, evidence_decay_per_s ** 1.4 cuts every track's
+        # evidence by 62% in a single step, so two slow frames drop EVERY
+        # id below min_evidence at once: the reported symptom of all
+        # tokens vanishing together and then coming back a second later.
+        # Covariance growth has the same problem, pushing sigma past the
+        # report limit for tokens that never moved.
+        #
+        # Timestamp comparisons elsewhere (last_confirm_t, still-hold)
+        # deliberately keep using real wall time: a token really has gone
+        # that long without confirming itself, and pretending otherwise
+        # would make the still-hold window lie.
+        dt = min(wall_dt, self.max_step_dt)
 
         for t in self.tracks:
             t.predict(dt)

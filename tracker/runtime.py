@@ -99,6 +99,14 @@ class TrackerRuntime:
         self._preview_raw = None      # downscaled raw (full camera FOV)
         self._preview_tracks = []     # (x, y, r, id, coasting, age) in preview px
         self._preview_scale = 1.0
+        # Native pixel size of the image each preview view was downscaled
+        # FROM. The dashboard needs this to turn a click on the preview
+        # back into a camera-native coordinate: the play-area corners are
+        # defined in native pixels, and once the served preview stopped
+        # being full resolution, <img>.naturalWidth silently stopped
+        # meaning "camera width" -- which put every clicked corner at a
+        # quarter of its true position and produced a badly wrong crop.
+        self._preview_src = {}
         self._stats = {"fps": 0.0, "frames": 0, "last_frame_time": 0.0,
                        "connected": False, "error": None}
 
@@ -288,6 +296,7 @@ class TrackerRuntime:
                 # with WHICH stage rather than a guess. Without this the
                 # only visible symptom on a deployed box is a low fps
                 # number and an access log full of 200s.
+                "preview_src": dict(self._preview_src),
                 "timing_ms": (self.pipeline.timing_report()
                               if self.pipeline is not None else None),
                 **self._stats,
@@ -326,11 +335,16 @@ class TrackerRuntime:
                        float(r_px), t.marker_id, bool(t.misses > 0),
                        float(t.last_seen - t.created))
                       for t in reported]
+            raw_small = small(gray)
             with self._lock:
                 self._preview_rect = rect_small
-                self._preview_raw = small(gray)
+                self._preview_raw = raw_small
                 self._preview_tracks = tracks
                 self._preview_scale = scale
+                self._preview_src = {
+                    "rect": [int(rectified.shape[1]), int(rectified.shape[0])],
+                    "raw": [int(gray.shape[1]), int(gray.shape[0])],
+                }
         except Exception:
             # Preview is strictly cosmetic -- never let it break tracking.
             pass
@@ -372,6 +386,12 @@ class TrackerRuntime:
             arr = np.clip(img, 0, 255).astype(np.uint8) if img.max() > 1.5 \
                 else np.clip(img * 255, 0, 255).astype(np.uint8)
             h, w = arr.shape[:2]
+            # Before play-area calibration there is no pipeline and so no
+            # cache, yet this is precisely when the operator clicks the
+            # four corners -- so record the source size here as well.
+            with self._lock:
+                self._preview_src = dict(self._preview_src)
+                self._preview_src[view] = [int(w), int(h)]
             if w > self.PREVIEW_W:
                 sc = self.PREVIEW_W / float(w)
                 arr = cv2.resize(arr, (int(w*sc), int(h*sc)),

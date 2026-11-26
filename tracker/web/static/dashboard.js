@@ -186,14 +186,29 @@ function drawCorners() {
   }
 }
 
-// Clicked points are in PREVIEW (displayed) pixel space, which may be
-// scaled down from the camera's native resolution -- scale up to native
-// coordinates using the <img>'s natural size before sending to the API,
-// so calibration is correct regardless of how large the preview element
-// happens to be rendered in the browser window.
+// Clicked points are in PREVIEW (displayed) pixel space and must be
+// converted to CAMERA-NATIVE pixels, which is what the play-area API
+// defines corners in.
+//
+// Deliberately NOT via <img>.naturalWidth: the served preview is
+// downscaled for bandwidth, so naturalWidth is the downscaled width, not
+// the camera's. Using it silently placed every corner at a fraction of
+// its true position and produced a badly wrong crop -- the kind of bug
+// that looks like a calibration-maths error and is actually a unit
+// mismatch. The server reports the real source size per view instead.
+let previewSrc = {};   // view -> [native_w, native_h]
+
 function cornersToNative() {
-  const sx = preview.naturalWidth / preview.clientWidth;
-  const sy = preview.naturalHeight / preview.clientHeight;
+  const src = previewSrc[previewView];
+  if (!src) {
+    // No reported source size yet: fall back to the old assumption
+    // rather than silently sending preview-space numbers.
+    const sx = preview.naturalWidth / preview.clientWidth;
+    const sy = preview.naturalHeight / preview.clientHeight;
+    return corners.map((c) => [c.x * sx, c.y * sy]);
+  }
+  const sx = src[0] / preview.clientWidth;
+  const sy = src[1] / preview.clientHeight;
   return corners.map((c) => [c.x * sx, c.y * sy]);
 }
 
@@ -392,6 +407,7 @@ const diagLine = document.getElementById("diagLine");
 async function refreshDiag() {
   try {
     const t = await api("/api/tokens");
+    if (t.preview_src) previewSrc = t.preview_src;
     const ms = t.timing_ms || {};
     const stages = ["t_detect", "t_decode", "t_track"]
       .filter((k) => ms[k] !== undefined)
