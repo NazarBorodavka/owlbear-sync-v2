@@ -42,6 +42,12 @@ class Pipeline:
         self.matcher = Matcher(self.codebook, geom)
         self.tracker = Tracker(geom, px_per_mm, **tracker_kw)
         self.rescan_interval = 1.0 / rescan_hz if rescan_hz > 0 else 0.0
+        # Bounds on the per-track local search (see process()). 4x keeps
+        # it at ~6.5ms against 38.7ms at the old 10x, and 0.5s is about
+        # as long as "the token is still roughly here" stays a useful
+        # guess before a global scan is simply the better answer.
+        self.local_search_max_r_mult = 4.0
+        self.local_search_max_coast_s = 0.5
         self.expected_tokens = expected_tokens
         self._last_rescan = -1e9
         self.stats = {"frames": 0, "rescans": 0,
@@ -85,11 +91,35 @@ class Pipeline:
                 # SEARCH is fine because the normal association step still
                 # has to accept the result, and because this result still
                 # goes through full decode+gating before being trusted.
-                search_r = min(
-                    self.geom.r_out * self.px_per_mm * 2.5
-                    + t.last_speed * max(t.coast_s, 1.0 / 15.0),
-                    self.geom.r_out * self.px_per_mm * 10.0)
-                d = self.detector.search_near(img, tx, ty, radius_px=search_r)
+                # Bounded hard, and skipped entirely once the track has
+                # been coasting a while.
+                #
+                # search_near's cost grows with the SQUARE of its radius,
+                # and the old 10x cap made it cost MORE than the thing it
+                # exists to avoid: measured on a real frame, 38.7ms for
+                # one track at 10x against 35ms for a whole full-frame
+                # detect, so six coasting tracks spent 232ms searching
+                # locally for what one global scan would have found.
+                #
+                # That closed a feedback loop on slow hardware: slow
+                # frames -> tracks coast -> coast_s grows the radius ->
+                # the "cheap" path costs more than the expensive one ->
+                # slower frames. It is the mechanism behind a deployed
+                # server swinging between 66ms and 1431ms per frame on
+                # identical hardware.
+                #
+                # A local search is an optimisation for "it is right
+                # about here". Once that premise is stale the full-frame
+                # detect -- which runs anyway, and is cheaper -- is the
+                # right tool, so stop paying twice.
+                if t.coast_s <= self.local_search_max_coast_s:
+                    search_r = min(
+                        self.geom.r_out * self.px_per_mm * 2.5
+                        + t.last_speed * max(t.coast_s, 1.0 / 15.0),
+                        self.geom.r_out * self.px_per_mm
+                        * self.local_search_max_r_mult)
+                    d = self.detector.search_near(img, tx, ty,
+                                                  radius_px=search_r)
             if d is not None:
                 cand.append(d)
         # 2) expensive path: full-frame search, on a slow cadence. Both

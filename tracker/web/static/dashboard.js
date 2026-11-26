@@ -330,13 +330,46 @@ document.getElementById("resetDetectorBtn").addEventListener("click", async () =
 // ---------------------------------------------------------------------
 // Status + live tokens
 // ---------------------------------------------------------------------
+// Restore saved values into the form ONCE, the first time a calibrated
+// status arrives.
+//
+// The stored calibration already carried width/height/px_per_mm, but
+// nothing ever wrote them back into the inputs, so every restart showed
+// the HTML defaults (600x450, 3.5) regardless of what was actually
+// calibrated and in use. That is actively misleading: the numbers on
+// screen disagreed with the numbers the tracker was running on, and
+// re-saving the form would silently overwrite a good calibration with
+// the defaults.
+//
+// Once only, and never while a field is focused, so this cannot fight
+// someone mid-edit.
+let settingsRestored = false;
+function restoreSavedSettings(status) {
+  if (settingsRestored || !status.playarea || !status.playarea.calibrated) return;
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el && v !== undefined && v !== null) {
+      el.value = v;
+    }
+  };
+  set("areaWidthMm", status.playarea.width_mm);
+  set("areaHeightMm", status.playarea.height_mm);
+  set("pxPerMm", status.playarea.px_per_mm);
+  settingsRestored = true;
+  updateScaleHint();
+}
+
 async function refreshStatus() {
   try {
     const status = await api("/api/calibration/status");
+    restoreSavedSettings(status);
     setBadge("lensBadge", status.lens.calibrated, status.lens.calibrated ? `RMS ${status.lens.rms_error.toFixed(2)}px` : "not calibrated");
     setBadge("playareaBadge", status.playarea.calibrated,
       status.playarea.calibrated ? `${status.playarea.coverage_cm[0].toFixed(0)}x${status.playarea.coverage_cm[1].toFixed(0)}cm` : "not calibrated");
-    setBadge("detectorBadge", status.detector.calibrated, status.detector.calibrated ? "tuned" : "using defaults");
+    setBadge("detectorBadge", status.detector.calibrated,
+      status.detector.calibrated
+        ? `peak ${status.detector.min_peak.toFixed(3)} / margin ${status.detector.min_margin.toFixed(3)}`
+        : "using defaults");
   } catch (e) { /* calibration status requires auth; ignore transient failures */ }
 }
 

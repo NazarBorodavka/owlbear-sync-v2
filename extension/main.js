@@ -190,6 +190,17 @@ async function pushPositions() {
 
   const updates = [];
   for (const pt of latestPhysicalTokens) {
+    // Only act on a position that was actually READ this frame.
+    //
+    // The tracker also publishes HELD positions -- the last confirmed
+    // place of a token whose code it cannot currently read (a hand over
+    // it, a mini covering part of the ring). Those are correct as "where
+    // it was", but they are not news, and pushing them would let a
+    // stale or slightly-off position overwrite a good one in the scene.
+    // Skipping them leaves whatever is already on the map untouched,
+    // which is the right behaviour for a token that is merely
+    // unreadable: it has not moved as far as anyone knows.
+    if (pt.coasting) continue;
     const itemId = mapping[String(pt.marker_id)];
     if (!itemId) continue;
     const targetItem = sceneItemsCache.find((i) => i.id === itemId);
