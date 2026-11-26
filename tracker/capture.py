@@ -6,18 +6,16 @@ experience, not re-derived from scratch -- they are low-level RTSP/
 threading correctness, not a settings/UI design decision, so there is
 nothing to "start fresh" about:
 
-  1. FFmpeg's RTSP defaults (analyzeduration=5s, probesize=5MB) impose a
-     fixed ~5s latency handicap at connection time that a live decoder can
-     never claw back. SDP already negotiates codec parameters during the
-     RTSP handshake, so this is pure waste for RTSP specifically. Trimmed
-     to 100ms/32KB -- found by testing to be the smallest values that
-     still reliably parse SPS/PPS under normal network jitter; going all
-     the way to near-zero occasionally left the stream unable to open at
-     all under any jitter.
-  2. rtsp_transport=udp: TCP's retransmit-and-block behaviour means one
-     delayed/lost packet stalls every frame queued behind it. UDP just
-     drops the bad packet and moves on, which is the right trade for a
-     live local-network feed.
+  1. SUPERSEDED -- see the option string below. This used to trim
+     analyzeduration/probesize to 100ms/32KB to avoid a connection-time
+     latency handicap. That reasoning was derived against a 1080p H.264
+     stream and does NOT survive the camera's actual 4K HEVC output: 32KB
+     is smaller than a single 4K keyframe, so FFmpeg never sees a
+     complete IDR before it starts handing out frames.
+  2. SUPERSEDED -- rtsp_transport=udp is still right (see below), but the
+     reason recorded here was incomplete: UDP only works if the socket
+     buffer is large enough to hold a 4K keyframe burst, which the
+     default is not.
   3. release() MUST join the reader thread before releasing the
      VideoCapture object. Doing both at once is a use-after-free race at
      the OpenCV/FFmpeg C++ level -- the reader can be blocked inside
@@ -46,10 +44,50 @@ import threading
 import collections
 
 # Must be set before the first cv2.VideoCapture() call -- OpenCV's FFmpeg
-# backend reads this at stream-open time, not per-frame.
+# backend reads this at stream-open time, not per-frame. setdefault, not
+# a plain assignment, so an operator can override the whole string from
+# the environment to test a different transport without editing code.
+#
+# Tuned by measuring against the REAL camera (4K HEVC, 20fps nominal),
+# 12-20s per variant, counting FFmpeg's own decode errors:
+#
+#   transport  probe        extra flags          fps   decode errors
+#   udp        100ms/32KB   nobuffer+low_delay   16.1  66     <- the old default
+#   tcp        2s/5MB       nobuffer+low_delay   15.7  74
+#   udp        2s/5MB       nobuffer             17.4  74
+#   tcp        2s/5MB       --                   22.3   0
+#   udp        2s/5MB       --                   21.4   0     <- this
+#
+# Two separate things were wrong, and each alone is enough to break it:
+#
+#   * probesize/analyzeduration too small. A 4K HEVC keyframe is larger
+#     than 32KB on its own, so the demuxer began emitting frames before
+#     it had a complete IDR to anchor them to.
+#   * fflags=nobuffer / flags=low_delay. These tell FFmpeg to start
+#     decoding mid-GOP rather than waiting for a keyframe. On H.264 that
+#     costs a few smeared frames; on HEVC, whose reference-picture sets
+#     are far less forgiving, every inter frame until the next IDR fails
+#     to resolve its references -- the "Could not find ref with POC N /
+#     Error constructing the frame RPS" flood, repeating once per GOP
+#     forever.
+#
+# Note the latency argument that motivated the old values was simply
+# false: the corrected settings reach the FIRST frame in 0.07s versus
+# 2.38s, because a demuxer that can actually sync does not spend the
+# opening seconds discarding undecodable frames. Steady-state latency is
+# bounded by frame_buffer=deque(maxlen=1) below, not by these flags --
+# the reader always hands out the newest frame it has.
+#
+# buffer_size is the UDP socket receive buffer. The default (~64KB) is
+# far too small for 4K: a keyframe burst overruns it and the lost packets
+# are exactly what corrupts the reference chain. This is what makes UDP
+# viable here, and UDP is still preferred over TCP for a live feed for
+# the original reason -- a dropped packet should cost one frame, not
+# stall every frame queued behind a retransmit.
 os.environ.setdefault(
     'OPENCV_FFMPEG_CAPTURE_OPTIONS',
-    'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|analyzeduration;100000|probesize;32768'
+    'rtsp_transport;udp|buffer_size;10485760'
+    '|analyzeduration;2000000|probesize;5000000'
 )
 
 import cv2  # noqa: E402  (must follow the env var above)

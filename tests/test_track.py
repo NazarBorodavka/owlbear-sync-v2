@@ -31,12 +31,29 @@ def test_identity_survives_occlusion_gap():
     for _ in range(15):
         t += 1 / 15
         tr.step([], [], now=t)
-    # reappears, but too blurred to decode (id=None)
+    # Reappears, but too blurred to decode. It must NOT be published off
+    # an unidentified blob -- that is what was measured putting reported
+    # tokens on hands and shadows (2.1% of everything published on the
+    # occlusion clip). The track must still be ALIVE and still hold its
+    # id, which is the property this test actually exists for: v1 threw
+    # the identity away and had to re-identify from scratch.
     t += 1 / 15
     out = tr.step([mk(104, 101)], [(None, 0.0)], now=t)
+    assert out == [], \
+        f"published a token from a blob that never identified itself: {out}"
+    alive = [x for x in tr.tracks if x.marker_id == 3]
+    assert len(alive) == 1, f"identity lost across occlusion: {tr.tracks}"
+    key_before = alive[0].key
+
+    # The moment it reads as itself again it is published immediately,
+    # on the SAME track -- no re-acquisition delay, no new id.
+    t += 1 / 15
+    out = tr.step([mk(104, 101)], [(3, 0.5)], now=t)
     assert len(out) == 1 and out[0].marker_id == 3, \
-        f"identity lost across occlusion: {[(o.marker_id) for o in out]}"
-    print("  identity survives a 1s occlusion gap + undecodable reacquisition")
+        f"did not re-publish on the first confirmed frame: {out}"
+    assert out[0].key == key_before, "re-identified as a new track instead of resuming"
+    print("  identity survives a 1s occlusion gap; nothing published until "
+          "it identifies itself again, then instantly on the same track")
 
 
 def test_undecodable_blob_never_becomes_a_token():

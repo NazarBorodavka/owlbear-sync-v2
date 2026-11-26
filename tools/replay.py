@@ -62,8 +62,56 @@ def _open(path):
     return cap, fps, n
 
 
+def homomorphic_view(gray, px_per_mm, geom):
+    """Full-frame picture of what the decoder's illumination rejection is
+    doing, for eyeballing against the raw frame.
+
+    This is an ANALOGUE, not the real thing. decode.py high-passes the 1D
+    strip unwrapped around a single marker's ring, so there is no
+    high-passed frame anywhere in the pipeline to dump out. What is
+    shared is the operation: take a log, so the projector's multiplicative
+    contribution becomes additive, then subtract the slowly-varying part.
+    Here that subtraction is a large-sigma blur in 2D rather than dropping
+    angular harmonics in 1D.
+
+    Sigma is tied to the token radius: the point is to remove light that
+    varies more slowly than one token while keeping the chip detail, which
+    is the same scale separation the 1D version relies on.
+    """
+    import cv2
+    lg = np.log(np.maximum(gray.astype(np.float64),
+                           max(1e-6, 1e-4 * float(gray.max()))))
+    sigma = max(2.0, geom.r_out * px_per_mm)
+    # The low-pass is taken on a shrunken copy and scaled back up, rather
+    # than blurring a 4K frame with a ~90px sigma directly. That naive
+    # version needs a ~500px kernel per frame and measured ~30x slower
+    # than the whole rest of the pipeline -- it turned a 5-minute render
+    # into one that had not cleared 10% after several minutes. Downscaling
+    # by the same factor as the blur radius is exact enough here: the
+    # thing being estimated is by definition the part of the image with no
+    # detail at this scale.
+    k = max(1, int(sigma / 4.0))
+    if k > 1:
+        small = cv2.resize(lg, (lg.shape[1] // k, lg.shape[0] // k),
+                           interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), sigma / k,
+                                 borderType=cv2.BORDER_REPLICATE)
+        low = cv2.resize(small, (lg.shape[1], lg.shape[0]),
+                         interpolation=cv2.INTER_LINEAR)
+    else:
+        low = cv2.GaussianBlur(lg, (0, 0), sigma,
+                               borderType=cv2.BORDER_REPLICATE)
+    hp = lg - low
+    # Fixed +/-3 sigma window rather than per-frame min/max, so brightness
+    # in the output means the same thing from frame to frame -- auto-scaling
+    # each frame would hide exactly the illumination changes this is meant
+    # to show.
+    sd = float(hp.std()) or 1.0
+    return np.clip(128.0 + 128.0 * hp / (3.0 * sd), 0, 255).astype(np.uint8)
+
+
 def replay(video, calibration_dir, n_ids=6, limit=None, annotate=None,
-           rescan_hz=3.0, progress=True):
+           rescan_hz=0.0, progress=True, annotate_highpass=None):
     import cv2
 
     geom = RingGeometry()
@@ -88,6 +136,7 @@ def replay(video, calibration_dir, n_ids=6, limit=None, annotate=None,
     frame_dt = 1.0 / src_fps if src_fps > 0 else 1.0 / 15.0
 
     writer = None
+    writer_hp = None
     # Per-track history, keyed by the tracker's own track key, so an
     # identity flip within one track is distinguishable from two separate
     # tracks that happened to hold the same id.
@@ -133,26 +182,51 @@ def replay(video, calibration_dir, n_ids=6, limit=None, annotate=None,
                 track_ids[t.key]  # touch, so phantom tracks are counted
         ids_per_frame.append(len(seen))
 
-        if annotate:
+        if annotate or annotate_highpass:
             vis = cv2.cvtColor(np.clip(rect, 0, 255).astype(np.uint8),
                                cv2.COLOR_GRAY2BGR) if rect.ndim == 2 else rect
+            vis_hp = None
+            if annotate_highpass:
+                vis_hp = cv2.cvtColor(
+                    homomorphic_view(rect, pipe.px_per_mm, geom),
+                    cv2.COLOR_GRAY2BGR)
             for t in reported:
-                x, y = int(t.pos[0]), int(t.pos[1])
+                # Draw where tokens_mm() would REPORT the token, not where
+                # the filter extrapolates it -- otherwise the annotated
+                # video shows a confident circle sliding across the table
+                # that no consumer of the API would ever have been given.
+                px_, py_ = t.report_pos
+                x, y = int(px_), int(py_)
                 r = int(geom.r_out * pipe.px_per_mm)
                 named = t.marker_id is not None
                 # green = decoded and measured, amber = coasting,
                 # red = reported but never decoded (a phantom)
                 col = (0, 200, 0) if named and t.misses == 0 else \
                       (0, 180, 230) if named else (0, 0, 230)
-                cv2.circle(vis, (x, y), r, col, 2)
-                cv2.putText(vis, str(t.marker_id) if named else "?",
-                            (x - 6, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
-            if writer is None:
-                h, w = vis.shape[:2]
-                writer = cv2.VideoWriter(annotate,
-                                         cv2.VideoWriter_fourcc(*"mp4v"),
-                                         src_fps or 15.0, (w, h))
-            writer.write(vis)
+                # Identical overlay on both renders: the two videos differ
+                # ONLY in the underlying image, so anything that looks
+                # different between them is the filtering, not the tracking.
+                for canvas in (vis, vis_hp):
+                    if canvas is None:
+                        continue
+                    cv2.circle(canvas, (x, y), r, col, 2)
+                    cv2.putText(canvas, str(t.marker_id) if named else "?",
+                                (x - 6, y + 5), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5, col, 2)
+            if annotate:
+                if writer is None:
+                    h, w = vis.shape[:2]
+                    writer = cv2.VideoWriter(annotate,
+                                             cv2.VideoWriter_fourcc(*"mp4v"),
+                                             src_fps or 15.0, (w, h))
+                writer.write(vis)
+            if annotate_highpass:
+                if writer_hp is None:
+                    h, w = vis_hp.shape[:2]
+                    writer_hp = cv2.VideoWriter(annotate_highpass,
+                                                cv2.VideoWriter_fourcc(*"mp4v"),
+                                                src_fps or 15.0, (w, h))
+                writer_hp.write(vis_hp)
 
         i += 1
         if progress and i % 50 == 0:
@@ -162,6 +236,8 @@ def replay(video, calibration_dir, n_ids=6, limit=None, annotate=None,
     cap.release()
     if writer is not None:
         writer.release()
+    if writer_hp is not None:
+        writer_hp.release()
     wall = time.perf_counter() - t_start
     if progress:
         print(" " * 40, end="\r")
@@ -274,6 +350,11 @@ def main():
     ap.add_argument("--annotate", default=None,
                     help="write an overlaid video for eyeballing (green=tracked, "
                          "amber=coasting, red=phantom)")
+    ap.add_argument("--annotate-highpass", default=None,
+                    help="write a SECOND overlaid video showing the "
+                         "illumination-rejected view (see homomorphic_view: "
+                         "a 2D analogue of the decoder's per-marker "
+                         "high-pass, for comparing against --annotate)")
     ap.add_argument("--json", dest="json_out", default=None)
     ap.add_argument("--target-fps", type=float, default=15.0)
     ap.add_argument("--expect-tokens", type=int, default=None,
@@ -283,7 +364,8 @@ def main():
 
     print(f"Replaying {args.video} ...")
     r = replay(args.video, args.calibration, n_ids=args.n_ids,
-               limit=args.limit, annotate=args.annotate)
+               limit=args.limit, annotate=args.annotate,
+               annotate_highpass=args.annotate_highpass)
 
     print(f"\n{r['frames']} frames at {r['source_fps']}fps source, "
           f"{r['px_per_mm']}px/mm")
@@ -301,6 +383,8 @@ def main():
 
     if args.annotate:
         print(f"\nAnnotated video: {args.annotate}")
+    if args.annotate_highpass:
+        print(f"Illumination-rejected view: {args.annotate_highpass}")
     if args.json_out:
         with open(args.json_out, "w") as f:
             json.dump(r, f, indent=2)

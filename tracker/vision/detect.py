@@ -22,8 +22,60 @@ import numpy as np
 
 from .decode import bilinear
 
+# How far the detection ring's edge pixels may sit from a perfect circle,
+# as a fraction of the expected radius, before a candidate is rejected.
+#
+# 0.06 was too tight against a real table. A token's ring is only
+# perfectly circular in the rectified image if it lies exactly on the
+# plane the play-area homography was fitted to; a table whose two halves
+# are not quite coplanar (or any residual lens distortion) projects it as
+# a slight ellipse, and a circle fit to an ellipse has a residual
+# proportional to the eccentricity -- not to anything being wrong with
+# the marker.
+#
+# Measured on real IR footage with six stationary markers: the two on the
+# far half of the table fitted with 4.6px residual against a 3.67px
+# limit, so one of them was detected in only 58% of frames while sitting
+# completely still. Raising the limit took that marker to 100% and
+# whole-frame "all six visible" from 38% to 80%.
+#
+# This does NOT trade away false-positive safety, which was checked
+# rather than assumed: across 0.06/0.08/0.10/0.12 the number of detected
+# blobs that failed to decode was IDENTICAL (0.2/frame on a bare table,
+# 0.0/frame with dice and a mug on it). The decode gates, not the circle
+# fit, are what reject non-markers -- the circle fit was only ever
+# rejecting real ones.
+MAX_RESID_FRAC = 0.10
+
+# OpenCV is used ONLY as an optional accelerator for three hot spots
+# below (Sobel, Gaussian blur, block-mean downsample). Every one of them
+# keeps its original pure-numpy implementation as a fallback, because
+# this module's core algorithms are deliberately importable and testable
+# without OpenCV -- that property is why they were written in numpy in
+# the first place and it is not worth trading away for speed.
+#
+# Measured on a real 3168x1785 rectified frame: detect() went from
+# 124.5ms to ~30ms, which is the difference between full-frame detection
+# being affordable at 3Hz and being affordable EVERY frame. That matters
+# far more than it sounds: at 3Hz the tracker had to extrapolate a moving
+# token for up to 10 frames between looks, and reporting that
+# extrapolation is what made fast drags overshoot and snap back.
+try:
+    import cv2 as _cv2
+except ImportError:          # pragma: no cover - exercised by env, not tests
+    _cv2 = None
+
 
 def sobel(img):
+    if _cv2 is not None:
+        # cv2's ksize=3 kernel is the same [[-1,0,1],[-2,0,2],[-1,0,1]]
+        # UNNORMALISED, hence the /8 to match the numpy path exactly.
+        img = np.ascontiguousarray(img, dtype=np.float64)
+        gx = _cv2.Sobel(img, _cv2.CV_64F, 1, 0, ksize=3,
+                        borderType=_cv2.BORDER_REPLICATE) / 8.0
+        gy = _cv2.Sobel(img, _cv2.CV_64F, 0, 1, ksize=3,
+                        borderType=_cv2.BORDER_REPLICATE) / 8.0
+        return gx, gy
     kx = np.array([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]]) / 8.0
     p = np.pad(img, 1, mode='edge')
     gx = np.zeros_like(img)
@@ -44,6 +96,10 @@ def gaussian_blur(img, sigma):  # noqa: D401
     img = np.asarray(img, dtype=np.float64)
     if sigma <= 0:
         return img
+    if _cv2 is not None:
+        # BORDER_REPLICATE matches the numpy path's mode='edge' padding.
+        return _cv2.GaussianBlur(np.ascontiguousarray(img), (0, 0), sigma,
+                                 borderType=_cv2.BORDER_REPLICATE)
     rad = max(1, int(3 * sigma))
     x = np.arange(-rad, rad + 1)
     k = np.exp(-(x ** 2) / (2 * sigma ** 2))
@@ -64,7 +120,13 @@ def downsample(img, f):
         return img
     h = (img.shape[0] // f) * f
     w = (img.shape[1] // f) * f
-    return img[:h, :w].reshape(h // f, f, w // f, f).mean(axis=(1, 3))
+    crop = img[:h, :w]
+    if _cv2 is not None:
+        # INTER_AREA over an exact integer factor IS block-averaging, so
+        # this is the same operation as the reshape-mean below.
+        return _cv2.resize(np.ascontiguousarray(crop, dtype=np.float64),
+                           (w // f, h // f), interpolation=_cv2.INTER_AREA)
+    return crop.reshape(h // f, f, w // f, f).mean(axis=(1, 3))
 
 
 def vote_centers(img, r_px, grad_thresh_rel=0.25, polarity=+1):
@@ -162,7 +224,7 @@ def refine(img, cx, cy, r_px, n_ang=180, search_frac=0.18, trim=0.35):
 
 class Detector:
     def __init__(self, geom, px_per_mm, n_max=12, coarse=2,
-                 max_resid_frac=0.06, max_scale_err=0.20):
+                 max_resid_frac=MAX_RESID_FRAC, max_scale_err=0.20):
         self.geom = geom
         self.px_per_mm = px_per_mm
         self.n_max = n_max

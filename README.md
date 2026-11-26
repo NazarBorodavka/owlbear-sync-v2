@@ -273,6 +273,14 @@ pip install -r tracker/requirements.txt
 python -m tracker.web.app        # http://localhost:5000
 ```
 
+Or `tools/run_local.sh`, which does the same thing but creates its own
+venv on first run and defaults `TRACKER_DATA_DIR` to `./data` -- so it
+reuses whatever lens/play-area/detector calibration is already on this
+machine instead of starting from scratch. This is the quickest way to
+try an uncommitted change against the real camera before it goes near
+the server: export `TRACKER_CAMERA_URL` first to have it auto-start, or
+leave it unset and type the RTSP URL into the dashboard as usual.
+
 Tests are plain scripts, no pytest:
 
 ```bash

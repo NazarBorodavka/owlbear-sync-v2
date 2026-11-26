@@ -24,7 +24,16 @@ from .track import Tracker
 
 class Pipeline:
     def __init__(self, geom, codebook, px_per_mm,
-                 rescan_hz=3.0, expected_tokens=None, **tracker_kw):
+                 rescan_hz=0.0, expected_tokens=None, **tracker_kw):
+        # rescan_hz=0 means "full-frame detect EVERY frame", which is now
+        # the default. It used to be 3Hz because detect() cost ~124ms on a
+        # real 3168x1785 frame; moving its three hot spots onto OpenCV
+        # (see detect.py) brought that to ~28ms, which fits inside a 20fps
+        # budget. That is not just a speed win -- at 3Hz the tracker had to
+        # EXTRAPOLATE a moving token for up to 10 frames between looks, and
+        # reporting that extrapolation is exactly what made fast drags
+        # overshoot and snap back. Detecting every frame means coasting is
+        # a one-frame edge case instead of the normal path during motion.
         geom.validate()
         self.geom = geom
         self.codebook = np.asarray(codebook)
@@ -55,7 +64,7 @@ class Pipeline:
         self.stats["frames"] += 1
 
         t0 = time.perf_counter()
-        dets = []
+        cand = []
         # 1) cheap path: re-find each existing track where it is predicted
         for t in self.tracker.tracks:
             tx, ty = t.pos
@@ -82,21 +91,22 @@ class Pipeline:
                     self.geom.r_out * self.px_per_mm * 10.0)
                 d = self.detector.search_near(img, tx, ty, radius_px=search_r)
             if d is not None:
-                dets.append(d)
-        # 2) expensive path: full-frame search, on a slow cadence
-        if self._should_rescan(now, len(dets)):
+                cand.append(d)
+        # 2) expensive path: full-frame search, on a slow cadence. Both
+        # paths are kept and decoded BEFORE merging now -- see
+        # _merge_by_quality for why doing that after a position-only
+        # dedup was a real bug, not just extra cost.
+        if self._should_rescan(now, len(cand)):
             self._last_rescan = now
             self.stats["rescans"] += 1
-            for d in self.detector.detect(img):
-                if all(np.hypot(d["x"] - e["x"], d["y"] - e["y"])
-                       > self.geom.r_out * self.px_per_mm * 0.8 for e in dets):
-                    dets.append(d)
+            cand += self.detector.detect(img)
         self.stats["t_detect"] += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        decodes = [self.matcher.decode(img, d["x"], d["y"],
-                                       d.get("px_per_mm", self.px_per_mm))
-                   for d in dets]
+        decoded = [(d, self.matcher.decode(img, d["x"], d["y"],
+                                           d.get("px_per_mm", self.px_per_mm)))
+                   for d in cand]
+        dets, decodes = self._merge_by_quality(decoded)
         self.stats["t_decode"] += time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -104,18 +114,68 @@ class Pipeline:
         self.stats["t_track"] += time.perf_counter() - t0
         return reported
 
+    def _merge_by_quality(self, decoded):
+        """Collapses candidates that are the SAME physical marker --
+        typically the cheap path re-finding a track's own position AND
+        the full-frame rescan finding it independently -- keeping
+        whichever candidate actually reads best, not whichever was
+        computed first.
+
+        This replaces a real, measured bug: the old merge decoded AFTER
+        discarding near-duplicates by position alone, and always kept the
+        cheap-path entry since it was appended first. The cheap path's
+        edge fit is seeded at the track's last position and assumes that
+        is already close; a few frames into a slow, continuous drag that
+        stops being true, and refine_at() can converge to a plausible
+        but WRONG nearby edge -- a real circle, legitimate residual, but
+        not the token, so it decodes as noise. That wrong candidate then
+        sat within the merge radius of the CORRECT full-detect candidate
+        (the same physical ring, just found twice) and silently ate it:
+        measured on real footage, an established track with 167 confirmed
+        hits lost its own detection for 3+ consecutive frames while the
+        token was in plain, unoccluded view, because the only candidate
+        the tracker ever saw near it decoded at peak 0.59 instead of the
+        0.94+ the real ring was reading at a point 32px away.
+
+        Decoded always beats undecoded (real evidence beats none,
+        whatever the circle-fit residual looked like); between two
+        decoded candidates, higher margin wins; between two undecoded
+        ones, lower residual wins, matching Detector._dedup's rule for
+        candidates within ONE detection pass."""
+        tol = self.geom.r_out * self.px_per_mm * 0.8
+        kept = []   # [det, (mid, margin), quality_key]
+        for d, (mid, margin) in decoded:
+            # (1, margin) sorts above EVERY (0, ...) tuple regardless of
+            # margin/residual magnitude -- a decode is always stronger
+            # evidence than a bare geometric fit.
+            quality = (1, margin) if mid is not None else (0, -d.get("resid", 1e9))
+            dup = next((k for k in kept if np.hypot(d["x"] - k[0]["x"],
+                                                     d["y"] - k[0]["y"]) <= tol), None)
+            if dup is None:
+                kept.append([d, (mid, margin), quality])
+            elif quality > dup[2]:
+                dup[0], dup[1], dup[2] = d, (mid, margin), quality
+        return [k[0] for k in kept], [k[1] for k in kept]
+
     def tokens_mm(self, reported, origin_px=(0.0, 0.0)):
         """Reportable tokens in millimetres relative to the play-area origin."""
         ox, oy = origin_px
         out = []
         for t in reported:
-            x, y = t.pos
+            # report_pos is the measurement while the token is being
+            # read, and the filter's short-horizon prediction while it is
+            # not -- bounded by Tracker.predict_publish_s, which is what
+            # stops this becoming the open-ended extrapolation that was
+            # once measured sliding a lost token off the table.
+            x, y = t.report_pos
             out.append({
                 "marker_id": t.marker_id,
                 "x_mm": (x - ox) / self.px_per_mm,
                 "y_mm": (y - oy) / self.px_per_mm,
                 "track": t.key,
                 "age_s": t.last_seen - t.created,
+                # True when this position is predicted rather than read,
+                # so a consumer can tell the two apart.
                 "coasting": t.misses > 0,
             })
         return out
