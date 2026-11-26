@@ -388,6 +388,7 @@ class TrackerRuntime:
 
     PREVIEW_W = 960
     PREVIEW_MAX_AGE_S = 2.0
+    PREVIEW_HZ = 10.0
 
     def _cache_preview_raw(self, gray):
         """Refresh ONLY the raw-camera preview. Used on the
@@ -421,6 +422,13 @@ class TrackerRuntime:
         itself wrong, which is exactly when they most need to look.
         """
         if _cv2 is None:
+            return
+        # The dashboard consumes this at 10fps at most, and it costs a
+        # real slice of the frame budget (measured 37.8ms/frame on the
+        # deployed server -- 17% of everything, spent producing frames
+        # nobody looks at). Refresh it at PREVIEW_HZ and skip otherwise.
+        now_t = time.time()
+        if (now_t - self._preview_at) < (1.0 / self.PREVIEW_HZ):
             return
         try:
             def small(img):
