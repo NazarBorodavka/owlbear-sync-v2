@@ -3,7 +3,7 @@
 process_frame(), with no RTSP capture or background thread involved.
 Requires cv2 (play-area calibration does) -- skips cleanly if absent.
 """
-import sys, os, shutil
+import sys, os, shutil, time, tempfile
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -84,6 +84,72 @@ def test_process_frame_before_calibration_fails_clearly():
         print(f"  prepare_pipeline() fails with a clear message before calibration: {e}")
 
 
+
+
+def test_start_is_idempotent():
+    """Calling start() again must not leave the previous capture and loop
+    thread alive.
+
+    Reachable in normal use from two directions: boot auto-start runs on
+    a background thread while the dashboard's Start button is already
+    clickable, and the button itself can be clicked twice. The failure it
+    caused was not subtle -- each extra start() left another live RTSP
+    session against a camera that serves exactly one, so every session
+    stalled. Observed on a deployed server as a 30s ffmpeg stream
+    timeout, frames frozen, and reconnects stuck at 0 (the counter being
+    read belonged to the newest object while an abandoned one held the
+    camera).
+    """
+    import threading
+    import tracker.capture as capture_mod
+
+    created = []
+
+    class FakeCapture:
+        reconnects = 0
+
+        def __init__(self, url):
+            self.url = url
+            self.released = False
+            created.append(self)
+
+        def read(self):
+            return False, None
+
+        def wait_for_frame(self, timeout=1.0):
+            time.sleep(0.02)
+            return False
+
+        def release(self):
+            self.released = True
+
+    real = capture_mod.RtspCapture
+    capture_mod.RtspCapture = FakeCapture
+    d = tempfile.mkdtemp()
+    try:
+        rt = TrackerRuntime(d)
+        for _ in range(3):
+            rt.start("rtsp://example/stream")
+        time.sleep(0.3)
+
+        loops = [t for t in threading.enumerate() if t.name == "tracker-loop"]
+        assert len(loops) == 1, f"{len(loops)} loop threads survived start() x3"
+        orphaned = [c for c in created if not c.released]
+        assert len(orphaned) == 1, (
+            f"{len(orphaned)} captures left holding the camera; only the "
+            f"current one should be unreleased")
+        assert orphaned[0] is rt.capture
+
+        rt.stop()
+        time.sleep(0.2)
+        assert all(c.released for c in created), "stop() left a capture open"
+        assert not [t for t in threading.enumerate() if t.name == "tracker-loop"]
+        print("  start() is idempotent: 3 starts leave 1 capture, 1 loop thread")
+    finally:
+        capture_mod.RtspCapture = real
+        shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     if not CV2_AVAILABLE:
         print("cv2 not available -- skipping runtime tests")
@@ -91,4 +157,5 @@ if __name__ == "__main__":
     test_process_frame_before_calibration_fails_clearly()
     test_process_frame_reports_tokens_with_correct_mm_positions()
     test_process_frame_handles_bgr_input_like_a_real_camera()
+    test_start_is_idempotent()
     print("\nall runtime tests passed")

@@ -111,6 +111,9 @@ class TrackerRuntime:
         # staleness check is indistinguishable from a working feed right
         # up until it silently freezes.
         self._preview_at = 0.0
+        # Guards start(): see there for why two concurrent starts used to
+        # leave an orphaned capture holding the camera's only session.
+        self._start_lock = threading.Lock()
         # Rolling per-stage cost for the stages OUTSIDE the pipeline.
         # Without these the dashboard could only account for detect +
         # decode + track, which on a deployed server added up to 72ms
@@ -151,6 +154,27 @@ class TrackerRuntime:
         preview (and therefore calibration) possible on a fresh install.
         """
         from .capture import RtspCapture
+        # Idempotent, and serialised against a concurrent start().
+        #
+        # Without this, calling start() twice left the FIRST capture and
+        # loop thread running: self.capture was simply overwritten
+        # (never released) and the old thread still saw _running True.
+        # The result was two live RTSP sessions against a camera that
+        # serves exactly one, so both stalled -- observed on the deployed
+        # server as "Stream timeout triggered after 30061ms", frames
+        # frozen at 19, and reconnects stuck at 0 because the counter
+        # being read belonged to the NEW object while the ABANDONED one
+        # held the session.
+        #
+        # Two callers make this reachable in normal use: boot auto-start
+        # runs on a background thread while the dashboard's Start button
+        # is already clickable, and the button itself can be pressed
+        # twice.
+        with self._start_lock:
+            self._start_locked(camera_url, RtspCapture)
+
+    def _start_locked(self, camera_url, RtspCapture):
+        self.stop()
         try:
             self.prepare_pipeline()
         except RuntimeError as e:
