@@ -63,6 +63,25 @@ class Track:
         # Publishing is anchored to this, not to 'we matched some
         # blob' -- see Tracker.step().
         self.last_confirm_t = now
+        # Where this track was the last time its id was actually
+        # confirmed. Stillness is measured against THIS, not against the
+        # previous frame: drifting 1px per frame for a second is not
+        # "still", but frame-to-frame it would look like it.
+        self.last_confirm_pos = (float(x), float(y))
+        # When a detection was last matched to this track AT its
+        # confirmed position, whether or not it decoded. Distinct from
+        # last_confirm_t (identity proven) and from misses (which counts
+        # an undecodable blob as a miss, deliberately, so it cannot move
+        # the track). Still-hold needs the third thing neither of those
+        # says: "is something physically still sitting here".
+        self.last_blob_t = now
+        # Has a blob been found at this spot on EVERY frame since the id
+        # was last confirmed? Still-hold rests on "a stationary object
+        # cannot have been swapped for another without moving", and that
+        # argument only survives if nothing was ever missing: across a
+        # gap where no blob was seen at all, the thing that reappears has
+        # not earned the benefit of the doubt.
+        self.still_unbroken = True
         # Seconds since this track last held a CONFIRMED identity (zero
         # at birth, not just after one is lost -- a track that never
         # confirms at all is gated the same way as one that lost its id,
@@ -266,7 +285,8 @@ class Tracker:
                  evidence_decay_per_s=0.5, confirm_hits=2,
                  max_report_sigma_mm=12.0, max_unconfirmed_s=1.5,
                  uncorroborated_min_margin=0.25,
-                 predict_publish_s=0.25):
+                 predict_publish_s=0.25,
+                 still_hold_s=20.0, still_tol_mm=2.0):
         self.geom = geom
         self.px_per_mm = px_per_mm
         self.base_px = geom.r_out * px_per_mm
@@ -318,6 +338,35 @@ class Tracker:
         # and beyond it the track stays ALIVE but silent, so identity
         # survives and re-acquisition is instant when it decodes again.
         self.predict_publish_s = predict_publish_s
+        # A CONFIRMED track whose blob is still being found in the same
+        # place may keep publishing for this much longer than
+        # predict_publish_s, without a fresh id confirmation.
+        #
+        # This exists for a specific, physical situation: a mini standing
+        # on a token permanently covers part of the ring (measured: a
+        # 28mm figure occludes 2.5-7 of 20 chips once parallax is
+        # accounted for, more at the table edges), so a token that is
+        # simply sitting there can stop re-confirming its id indefinitely
+        # while being in no way lost. Dropping it would be wrong -- the
+        # token is right there and has not moved.
+        #
+        # The safety argument is what makes this allowable at all: a
+        # stationary object cannot have been SWAPPED for a different one
+        # without moving. So this holds identity only while the blob
+        # keeps being re-found within still_tol_mm of where the id was
+        # last actually confirmed. Any real movement beyond that
+        # tolerance ends the hold immediately and the track must earn its
+        # id again, which is what stops this from becoming the "ghost
+        # that lives forever" failure that bare coasting produced.
+        # 20s rather than a few seconds because the real guard here is
+        # not the clock, it is the requirement that a blob keeps being
+        # re-found within still_tol_mm every single frame: lift the token
+        # and the hold ends on the next frame regardless of time
+        # remaining. The timeout only bounds the pathological case where
+        # something round happens to sit at that exact spot, so it is set
+        # long enough for a token to simply be left alone on the table.
+        self.still_hold_s = still_hold_s
+        self.still_tol_mm = still_tol_mm
         # Bounds a real, measured leak: a collision loser keeps being
         # tracked (by design -- it may yet earn its OWN identity if it is
         # a genuine second token, see _resolve_collisions), and a track
@@ -438,14 +487,64 @@ class Tracker:
                     t.note_seen(now)
                     if mid is not None and mid == t.marker_id:
                         t.last_confirm_t = now
+                        t.last_confirm_pos = (float(d["x"]), float(d["y"]))
+                        t.last_blob_t = now
+                        t.still_unbroken = True
                     t.add_evidence(mid, max(0.0, margin), decay, now)
                 else:
                     # Seen something, but not this token: coast instead of
-                    # being dragged onto it.
-                    t.misses += 1
-                    t.note_missed(dt)
-                    t.add_evidence(None, 0.0, decay, now)
+                    # being dragged onto it. The track does NOT move --
+                    # that part is deliberate. But if the blob is sitting
+                    # exactly where this token's id was last confirmed,
+                    # note that something is still physically there; a
+                    # mini covering part of the ring produces precisely
+                    # this (a blob that will not decode, at a position
+                    # that has not changed).
+                    same_place = False
+                    if mid is None:
+                        dx = d["x"] - t.last_confirm_pos[0]
+                        dy = d["y"] - t.last_confirm_pos[1]
+                        same_place = (float(np.hypot(dx, dy))
+                                      <= self.still_tol_mm * t.px_per_mm)
+                    if same_place:
+                        # An undecodable blob sitting within millimetres of
+                        # where this token's id was last CONFIRMED is
+                        # position evidence even though it is not identity
+                        # evidence. Accepting it as a position update is
+                        # what keeps the filter's covariance from growing
+                        # while a mini quietly covers the code: without
+                        # this, sigma outgrows max_report_sigma within a
+                        # few frames and the token stops being published
+                        # even though it is visibly sitting still.
+                        #
+                        # This is NOT the old "any nearby blob moves the
+                        # track" rule that had to be removed -- that
+                        # accepted anything inside a ~19mm gate and
+                        # dragged tokens onto hands. The window here is
+                        # still_tol_mm (2mm) around a position the id was
+                        # actually proven at, so it cannot relocate
+                        # anything; it can only decline to forget.
+                        t.update(d["x"], d["y"])
+                        t.misses = 0
+                        t.note_seen(now)
+                        t.last_blob_t = now
+                    else:
+                        t.still_unbroken = False
+                        t.misses += 1
+                        t.note_missed(dt)
+                    # Evidence decay is how a track FORGETS an identity it
+                    # can no longer support. A token sitting motionless
+                    # with its code covered is not being contradicted by
+                    # anything -- there is simply no new information -- so
+                    # its identity is frozen rather than decayed for as
+                    # long as the still-hold conditions apply. Without
+                    # this the evidence falls under min_evidence after
+                    # ~1.5s, marker_id reverts to None, and the token
+                    # disappears for a reason that has nothing to do with
+                    # whether it is still there.
+                    t.add_evidence(None, 0.0, 1.0 if same_place else decay, now)
             else:
+                t.still_unbroken = False
                 t.misses += 1
                 t.note_missed(dt)
                 t.add_evidence(None, 0.0, decay, now)
@@ -514,8 +613,24 @@ class Tracker:
         # self-confirm ever advances it, so "never confirmed" and "used
         # to be confirmed but is not anymore" both show up as the same
         # growing age here.
-        self.tracks = [t for t in self.tracks
-                       if (now - t.last_confirm_t) <= self.max_unconfirmed_s]
+        def keep(t):
+            age = now - t.last_confirm_t
+            if age <= self.max_unconfirmed_s:
+                return True
+            # Same still-hold reasoning as publishing: do not retire a
+            # confirmed token that is sitting motionless under a mini and
+            # still being seen every frame. Bounded by still_hold_s and
+            # by it actually not moving, so a genuinely abandoned track
+            # still ages out.
+            if (t.marker_id is not None and age <= self.still_hold_s
+                    and t.still_unbroken
+                    and (now - t.last_blob_t) <= 1.5 * dt):
+                dx = t.pos[0] - t.last_confirm_pos[0]
+                dy = t.pos[1] - t.last_confirm_pos[1]
+                return float(np.hypot(dx, dy)) <= self.still_tol_mm * t.px_per_mm
+            return False
+
+        self.tracks = [t for t in self.tracks if keep(t)]
 
         # Publish ONLY positions measured this frame (misses == 0). A
         # coasting track stays alive internally -- it keeps its identity
@@ -537,11 +652,29 @@ class Tracker:
         # recently enough that a short prediction is still honest. The
         # old rule published whenever a blob had been matched, which is
         # how an unidentified blob became a reported token.
-        out = [t for t in self.tracks
-               if t.marker_id is not None
-               and t.hits >= self.confirm_hits
-               and (now - t.last_confirm_t) <= self.predict_publish_s
-               and float(np.sqrt(max(t.P[0, 0], t.P[1, 1]))) <= self.max_report_sigma_px]
+        def publishable(t):
+            if t.marker_id is None or t.hits < self.confirm_hits:
+                return False
+            if float(np.sqrt(max(t.P[0, 0], t.P[1, 1]))) > self.max_report_sigma_px:
+                return False
+            age = now - t.last_confirm_t
+            if age <= self.predict_publish_s:
+                return True
+            # Still-hold: identity persists while the token demonstrably
+            # has not moved and is still being seen. Requires misses == 0
+            # (something IS being found here right now, not a memory) and
+            # that it has not drifted from where the id was last
+            # confirmed.
+            if (age <= self.still_hold_s and t.still_unbroken
+                    and (now - t.last_blob_t) <= 1.5 * dt):
+                dx = t.pos[0] - t.last_confirm_pos[0]
+                dy = t.pos[1] - t.last_confirm_pos[1]
+                tol_px = self.still_tol_mm * t.px_per_mm
+                if float(np.hypot(dx, dy)) <= tol_px:
+                    return True
+            return False
+
+        out = [t for t in self.tracks if publishable(t)]
         # Latch identity at the moment of publication, not at
         # confirmation: a track that settled on an id but never actually
         # got reported has promised nothing, so it stays free to change

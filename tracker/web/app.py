@@ -196,9 +196,19 @@ def _register_routes(app):
     @app.route("/video_feed")
     @auth.login_required
     def video_feed():
+        """?view=rect|raw  &overlay=0|1
+
+        rect is the rectified image the tracker actually works on; raw is
+        the full camera field of view, which is what you need to judge
+        whether the play-area crop itself is right -- seeing only the
+        cropped result hides exactly that.
+        """
+        view = "raw" if request.args.get("view") == "raw" else "rect"
+        overlay = request.args.get("overlay", "1") != "0"
+
         def gen():
             while True:
-                jpg = app.runtime.latest_frame_jpeg()
+                jpg = app.runtime.latest_frame_jpeg(view=view, overlay=overlay)
                 if jpg is not None:
                     yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n")
                 time.sleep(1.0 / 10.0)

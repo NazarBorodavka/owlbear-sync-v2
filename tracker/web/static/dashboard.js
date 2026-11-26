@@ -51,6 +51,18 @@ async function api(path, options = {}) {
 // Camera + preview
 // ---------------------------------------------------------------------
 const preview = document.getElementById("preview");
+// Which image the preview is showing. The rectified view is what the
+// tracker reads; the raw view is the full camera frame, and is the only
+// one on which clicking play-area corners makes sense -- the corners are
+// defined in RAW camera pixels, so clicking them on an already-rectified
+// image would be defining the crop in terms of itself.
+let previewView = "rect";
+let previewOverlay = true;
+function feedUrl() {
+  return `/video_feed?view=${previewView}&overlay=${previewOverlay ? 1 : 0}`
+       + `&ts=${Date.now()}`;
+}
+function startFeed() { preview.src = feedUrl(); }
 const overlay = document.getElementById("overlay");
 const octx = overlay.getContext("2d");
 let corners = [];   // clicked points, in PREVIEW pixel space
@@ -109,7 +121,7 @@ document.getElementById("startCameraBtn").addEventListener("click", async () => 
       body: JSON.stringify(url ? { url } : {}),
     });
     input.value = "";
-    preview.src = "/video_feed?ts=" + Date.now();
+    startFeed();
     refreshCameraConfig();
   } catch (e) {
     alert("Failed to start camera: " + e.message);
@@ -134,7 +146,7 @@ document.getElementById("forgetCameraBtn").addEventListener("click", async () =>
   await refreshCameraConfig();
   try {
     const cfg = await api("/api/camera");
-    if (cfg.running) preview.src = "/video_feed?ts=" + Date.now();
+    if (cfg.running) startFeed();
   } catch (e) { /* not authenticated yet; the prompt flow handles it */ }
 })();
 
@@ -344,3 +356,57 @@ refreshStatus();
 refreshTokens();
 setInterval(refreshStatus, 5000);
 setInterval(refreshTokens, 1000);
+
+
+// ---- preview view switcher -------------------------------------------
+const viewRectBtn = document.getElementById("viewRectBtn");
+const viewRawBtn = document.getElementById("viewRawBtn");
+const overlayToggle = document.getElementById("overlayToggle");
+const viewHint = document.getElementById("viewHint");
+
+function setView(v) {
+  previewView = v;
+  viewRectBtn.classList.toggle("active", v === "rect");
+  viewRawBtn.classList.toggle("active", v === "raw");
+  // Corner picking is only meaningful on the raw view, so say so rather
+  // than letting someone click four corners on the wrong image and get a
+  // crop that silently means something else.
+  viewHint.textContent = v === "raw"
+    ? "Full camera view. Click the 4 play-area corners here (top-left, top-right, bottom-right, bottom-left)."
+    : "Rectified view -- this is the image the tracker actually reads. Switch to full camera view to set the play area.";
+  if (preview.getAttribute("src")) startFeed();
+}
+viewRectBtn.addEventListener("click", () => setView("rect"));
+viewRawBtn.addEventListener("click", () => setView("raw"));
+overlayToggle.addEventListener("change", () => {
+  previewOverlay = overlayToggle.checked;
+  if (preview.getAttribute("src")) startFeed();
+});
+setView("rect");
+
+// ---- troubleshooting line --------------------------------------------
+// The access log shows only a stream of 200s; when the question is "why
+// is this slow" or "why is that token not showing", the useful numbers
+// are per-stage timings and per-token state, so surface them directly.
+const diagLine = document.getElementById("diagLine");
+async function refreshDiag() {
+  try {
+    const t = await api("/api/tokens");
+    const ms = t.timing_ms || {};
+    const stages = ["t_detect", "t_decode", "t_track"]
+      .filter((k) => ms[k] !== undefined)
+      .map((k) => `${k.slice(2)} ${ms[k].toFixed(1)}ms`)
+      .join("  ");
+    const toks = (t.tokens || [])
+      .map((k) => `${k.marker_id}${k.coasting ? "(hold)" : ""}`)
+      .join(" ");
+    diagLine.textContent =
+      `${t.connected ? "connected" : "NOT CONNECTED"}  ` +
+      `${(t.fps || 0).toFixed(1)}fps processed  frames ${t.frames || 0}  ` +
+      `reconnects ${t.reconnects || 0}\n` +
+      `${stages}${stages ? "  " : ""}tokens: ${toks || "none"}` +
+      (t.error ? `\nerror: ${t.error}` : "");
+  } catch (e) { /* auth prompt / transient */ }
+}
+setInterval(refreshDiag, 1000);
+refreshDiag();

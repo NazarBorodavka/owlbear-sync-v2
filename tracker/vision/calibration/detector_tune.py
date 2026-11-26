@@ -22,6 +22,13 @@ pretending to tune a knob that was never actually exercised.
 import numpy as np
 
 from ..detect import Detector, MAX_RESID_FRAC
+
+# How far above the measured background ceiling to place the peak
+# gate. 0.10 sits ~0.09-0.10 above a measured background p99 of
+# ~0.70 while staying below the ~0.825 floor that real reads from a
+# moving token were measured at, so it separates without clipping
+# legitimate motion.
+BACKGROUND_MARGIN = 0.10
 from ..decode import Matcher, MIN_PEAK, MIN_MARGIN
 
 
@@ -147,10 +154,29 @@ def calibrate_from_frames(frames, geom, px_per_mm, codebook, expected_ids=None):
     # reads start being rejected and tracks go stale instead.
     if bg_peaks:
         bg_p99 = float(np.percentile(bg_peaks, 99))
-        min_peak = float(np.clip(0.5 * (bg_p99 + p5_peak), 0.5, 0.90))
-        # never above the markers' own floor -- better to admit some
-        # background than to reject the markers we are calibrating for
-        min_peak = min(min_peak, p5_peak * 0.97)
+        # Anchor to the BACKGROUND ceiling plus a fixed margin, not to the
+        # midpoint between background and markers.
+        #
+        # The midpoint form made the result depend on how flattering the
+        # calibration moment happened to be. Measured on two real clips:
+        # background was essentially identical (p99 0.703 vs 0.692) but
+        # the marker 5th-percentile differed a lot (0.864 vs 0.951)
+        # purely because the markers read more cleanly in one, which
+        # dragged the derived gate from 0.784 to 0.822 -- a 0.038 swing
+        # driven by nothing the gate is supposed to care about.
+        #
+        # That mattered beyond repeatability: calibration is done with
+        # tokens STATIONARY, so the marker floor it measures is
+        # optimistic. Real reads from a MOVING token bottom out around
+        # 0.825, so a gate derived from a pristine stationary sample can
+        # land close enough to reject legitimate moving reads.
+        #
+        # The background distribution is the stable one and is what the
+        # gate actually exists to clear, so place it a fixed margin above
+        # that, and keep the marker floor only as a sanity ceiling so the
+        # gate can never exceed what the markers themselves achieve.
+        min_peak = float(np.clip(bg_p99 + BACKGROUND_MARGIN, 0.5, 0.90))
+        min_peak = min(min_peak, p5_peak * 0.95)
     else:
         bg_p99 = None
         min_peak = float(np.clip(p5_peak * 0.85, 0.5, 0.90))

@@ -22,10 +22,22 @@
         <button id="stopCameraBtn" class="secondary">Stop</button>
         <button id="forgetCameraBtn" class="secondary">Forget</button>
       </div>
+      <div class="row view-toggle">
+        <button id="viewRectBtn" class="viewbtn active">Play area (rectified)</button>
+        <button id="viewRawBtn" class="viewbtn">Full camera view</button>
+        <label class="inline-check">
+          <input id="overlayToggle" type="checkbox" checked /> show detections
+        </label>
+      </div>
+      <p id="viewHint" class="hint">
+        Corner clicking works on the FULL CAMERA view -- switch to it to set or
+        re-check the play area, and back to rectified to see what the tracker reads.
+      </p>
       <div class="preview-wrap">
         <img id="preview" alt="live preview" />
         <canvas id="overlay"></canvas>
       </div>
+      <p id="diagLine" class="hint mono"></p>
     </section>
 
     <section class="card">

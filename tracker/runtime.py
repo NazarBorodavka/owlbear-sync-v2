@@ -87,6 +87,18 @@ class TrackerRuntime:
         self._running = False
         self._lock = threading.Lock()
         self._latest_tokens = []
+        # Cached preview material, produced as a by-product of the frame
+        # the tracking loop ALREADY processed. Before this existed, the
+        # dashboard's video_feed pulled its OWN fresh frame and redid the
+        # full gray-convert + rectify + 4K JPEG encode at 10Hz --
+        # duplicating the entire front half of the pipeline on a second
+        # frame and starving the tracking loop of CPU. That is the
+        # clearest single reason a server reported ~2fps while the same
+        # code managed 20 on a laptop that was not also serving a preview.
+        self._preview_rect = None     # downscaled rectified view
+        self._preview_raw = None      # downscaled raw (full camera FOV)
+        self._preview_tracks = []     # (x, y, r, id, coasting, age) in preview px
+        self._preview_scale = 1.0
         self._stats = {"fps": 0.0, "frames": 0, "last_frame_time": 0.0,
                        "connected": False, "error": None}
 
@@ -241,6 +253,7 @@ class TrackerRuntime:
                 rectified = rectified.astype(np.float64)
             reported = pipe.process(rectified, now=now)
             tokens = pipe.tokens_mm(reported)
+            self._cache_preview(gray, rectified, reported, pipe)
         except Exception as e:
             with self._lock:
                 self._stats["error"] = str(e)
@@ -271,32 +284,116 @@ class TrackerRuntime:
                 # steadily points at a flaky RTSP link (or a camera that
                 # reboots itself); see RtspCapture._reopen()'s docstring.
                 "reconnects": self.capture.reconnects if self.capture else 0,
+                # Per-stage milliseconds, so "it is slow" can be answered
+                # with WHICH stage rather than a guess. Without this the
+                # only visible symptom on a deployed box is a low fps
+                # number and an access log full of 200s.
+                "timing_ms": (self.pipeline.timing_report()
+                              if self.pipeline is not None else None),
                 **self._stats,
             }
 
-    def latest_frame_jpeg(self, quality=80):
-        """Encode the most recent rectified frame for the web dashboard's
-        live preview. Returns None if nothing has been processed yet."""
-        import cv2
-        if self.capture is None:
-            return None
-        ok, raw = self.capture.read()
-        if not ok:
-            return None
-        gray = raw if raw.ndim == 2 else _bgr_to_gray(raw)
+    PREVIEW_W = 960
+
+    def _cache_preview(self, gray, rectified, reported, pipe):
+        """Keep a small copy of what was just processed, for the dashboard.
+
+        Downscaled to PREVIEW_W on purpose: a browser preview gains
+        nothing from 3168px across, and JPEG-encoding that full width was
+        itself a large share of the cost this cache exists to remove.
+
+        Both views are kept -- the rectified one the tracker actually
+        works on, AND the raw full-camera one, because an operator who
+        can only see the cropped result cannot tell whether the crop is
+        itself wrong, which is exactly when they most need to look.
+        """
+        if _cv2 is None:
+            return
         try:
-            rectified = self.session.rectify(gray)
+            def small(img):
+                h, w = img.shape[:2]
+                arr = np.clip(img, 0, 255).astype(np.uint8)
+                if w <= self.PREVIEW_W:
+                    return arr
+                sc = self.PREVIEW_W / float(w)
+                return _cv2.resize(arr, (int(w * sc), int(h * sc)),
+                                   interpolation=_cv2.INTER_AREA)
+            rect_small = small(rectified)
+            scale = rect_small.shape[1] / float(rectified.shape[1])
+            r_px = pipe.geom.r_out * pipe.px_per_mm * scale
+            tracks = [(float(t.report_pos[0]) * scale,
+                       float(t.report_pos[1]) * scale,
+                       float(r_px), t.marker_id, bool(t.misses > 0),
+                       float(t.last_seen - t.created))
+                      for t in reported]
+            with self._lock:
+                self._preview_rect = rect_small
+                self._preview_raw = small(gray)
+                self._preview_tracks = tracks
+                self._preview_scale = scale
         except Exception:
-            # Before play-area calibration there is no rectification to
-            # apply, so serve the RAW frame: this is the image the
-            # operator clicks the four corners on, and without it the
-            # calibration step has nothing to work from.
-            #
-            # Raw and not lens-undistorted on purpose -- the play-area
-            # endpoint undistorts the clicked POINTS itself, so showing
-            # an already-undistorted image would double-correct them.
-            rectified = gray
-        disp = np.clip(rectified, 0, 255).astype(np.uint8) if rectified.max() > 1.5 \
-            else np.clip(rectified * 255, 0, 255).astype(np.uint8)
+            # Preview is strictly cosmetic -- never let it break tracking.
+            pass
+
+    def latest_frame_jpeg(self, quality=80, view="rect", overlay=True):
+        """Encode the dashboard preview.
+
+        Serves the frame the tracking loop ALREADY processed rather than
+        pulling and re-processing a new one (see _cache_preview). view
+        selects the rectified image the tracker works on or the raw
+        full-camera image; overlay draws what was detected.
+
+        Falls back to the old read-and-rectify path only when no frame
+        has been cached yet -- notably BEFORE play-area calibration,
+        where there is no pipeline running to produce a cache but the
+        operator still needs a live image to click the four corners on.
+        """
+        import cv2
+        with self._lock:
+            cached = self._preview_raw if view == "raw" else self._preview_rect
+            tracks = list(self._preview_tracks)
+        if cached is None:
+            if self.capture is None:
+                return None
+            ok, raw = self.capture.read()
+            if not ok:
+                return None
+            gray = raw if raw.ndim == 2 else _bgr_to_gray(raw)
+            try:
+                img = self.session.rectify(gray) if view != "raw" else gray
+            except Exception:
+                # No play-area calibration yet: serve the RAW frame,
+                # because that is the image the corners get clicked on.
+                # Raw and not lens-undistorted on purpose -- the
+                # play-area endpoint undistorts the clicked POINTS
+                # itself, so an already-undistorted image would
+                # double-correct them.
+                img = gray
+            arr = np.clip(img, 0, 255).astype(np.uint8) if img.max() > 1.5 \
+                else np.clip(img * 255, 0, 255).astype(np.uint8)
+            h, w = arr.shape[:2]
+            if w > self.PREVIEW_W:
+                sc = self.PREVIEW_W / float(w)
+                arr = cv2.resize(arr, (int(w*sc), int(h*sc)),
+                                 interpolation=cv2.INTER_AREA)
+            cached, tracks = arr, []
+
+        disp = cv2.cvtColor(cached, cv2.COLOR_GRAY2BGR) if cached.ndim == 2 else cached.copy()
+        # The overlay only means anything on the rectified view: track
+        # positions are in rectified pixels, and mapping them back
+        # through the homography onto the raw image would be a different
+        # (and misleading-if-slightly-wrong) claim.
+        if overlay and view != "raw":
+            for (x, y, r, mid, coasting, age) in tracks:
+                # green = measured this frame, amber = held position
+                col = (0, 180, 230) if coasting else (0, 200, 0)
+                cv2.circle(disp, (int(x), int(y)), max(3, int(r)), col, 2)
+                cv2.drawMarker(disp, (int(x), int(y)), col, cv2.MARKER_CROSS,
+                               max(4, int(r * 0.4)), 1)
+                label = f"{mid}" if mid is not None else "?"
+                if coasting:
+                    label += " hold"
+                cv2.putText(disp, label, (int(x - r), int(y - r - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
         ok, buf = cv2.imencode(".jpg", disp, [cv2.IMWRITE_JPEG_QUALITY, quality])
         return buf.tobytes() if ok else None

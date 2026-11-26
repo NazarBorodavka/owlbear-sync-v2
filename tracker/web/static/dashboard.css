@@ -28,3 +28,14 @@ th, td { text-align: left; padding: 6px 8px; font-size: 12px; border-bottom: 1px
 th { color: #9a9aa5; font-weight: 600; }
 code { display: block; background: #121216; padding: 8px 10px; border-radius: 6px; font-size: 12px; word-break: break-all; }
 pre { white-space: pre-wrap; }
+
+/* View switcher for the live preview. The rectified view is what the
+   tracker works on; the raw view is the only way to judge whether the
+   play-area crop itself is placed correctly. */
+.view-toggle { align-items: center; gap: 0.5rem; }
+.viewbtn { opacity: 0.55; }
+.viewbtn.active { opacity: 1; font-weight: 600; }
+.inline-check { display: inline-flex; align-items: center; gap: 0.3rem;
+                font-size: 0.85rem; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.78rem; white-space: pre-wrap; }
