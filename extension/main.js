@@ -647,30 +647,91 @@ async function captureProjectorRect(reason) {
 // instant -- which is precisely the rect captured on the last tick before
 // the transition. That is why this watches the flag rather than asking
 // the operator to remember to press a button after every sync.
+// Sync state is tracked from the EVENT PAYLOADS, synchronously, and the
+// transition is decided before any await. That matters for the one-shot
+// "Sync View" button, which fires two changes milliseconds apart (on,
+// then immediately off).
+//
+// The previous version ignored the payloads and re-queried
+// getSyncView() inside an async handler. Both invocations then awaited,
+// and by the time either resolved the query returned the FINAL value --
+// false -- so each saw wasActive false, reading false, and neither
+// detected a transition. Nothing was captured, and a one-shot sync moved
+// the projector while the stored rect silently kept pointing at the old
+// view. The persistent toggle worked only because its two events are
+// seconds apart and cannot race.
+let _syncMine = false;
+let _syncOthers = false;
+
+function onSyncFlagsChanged() {
+  const active = Boolean(_syncMine || _syncOthers);
+  if (active === syncViewActive) return;
+  syncViewActive = active;
+  if (active) {
+    describeProjector();
+  } else {
+    // Sync just ended: the projector is parked on what we are showing.
+    captureProjectorRect("captured when sync view ended").catch((e) =>
+      console.error("Could not capture the projector view:", e));
+  }
+}
+
 function watchSyncView() {
   // Both halves matter. OBR.party is the OTHER players in the room -- it
   // does not include this client -- so a GM who has switched their own
   // sync view on to broadcast their view does not appear in it at all.
-  // Watching only the party therefore left syncViewActive permanently
-  // false on the very client that was driving the projector.
-  const recompute = async () => {
-    const wasActive = syncViewActive;
-    let mine = false, others = false;
-    try { mine = await OBR.player.getSyncView(); } catch (e) { /* ignore */ }
-    try {
-      others = (await OBR.party.getPlayers()).some((pl) => pl.syncView);
-    } catch (e) { /* ignore */ }
-    syncViewActive = Boolean(mine || others);
-    if (wasActive && !syncViewActive) {
-      // Sync just stopped: the projector is now parked where we are.
-      await captureProjectorRect("captured when sync view was switched off");
-    } else if (!wasActive && syncViewActive) {
-      describeProjector();
-    }
-  };
-  OBR.party.onChange(() => { recompute().catch(() => {}); });
-  OBR.player.onChange(() => { recompute().catch(() => {}); });
-  recompute().catch((e) => console.error("Could not read sync view:", e));
+  // Watching only the party left syncViewActive permanently false on the
+  // very client driving the projector.
+  OBR.player.onChange((pl) => {
+    _syncMine = Boolean(pl && pl.syncView);
+    onSyncFlagsChanged();
+  });
+  OBR.party.onChange((players) => {
+    _syncOthers = Array.isArray(players) && players.some((pl) => pl.syncView);
+    onSyncFlagsChanged();
+  });
+  Promise.all([
+    OBR.player.getSyncView().catch(() => false),
+    OBR.party.getPlayers().catch(() => []),
+  ]).then(([mine, players]) => {
+    _syncMine = Boolean(mine);
+    _syncOthers = players.some((pl) => pl.syncView);
+    syncViewActive = Boolean(_syncMine || _syncOthers);
+    describeProjector();
+  });
+}
+
+// A one-shot sync performed HERE rather than in Owlbear's own UI, so the
+// projector rect is captured in the same breath. Toggling sync on and
+// straight back off is exactly what "sync once" does -- followers jump to
+// this view, then stop following and stay there -- and it is also exactly
+// the manual sequence that was already known to work.
+//
+// This exists because Owlbear's own one-shot button may not touch the
+// syncView flag at all, and if it does not, no extension can observe it:
+// there is no viewport event, and another client's viewport cannot be
+// read. Doing the sync here removes the guesswork.
+const SYNC_SETTLE_MS = 400;
+
+async function syncProjectorToThisView(statusEl) {
+  statusEl.textContent = "Syncing the projector to this view...";
+  try {
+    await OBR.player.setSyncView(true);
+    // Give followers time to actually arrive before releasing them;
+    // un-syncing too early would park them mid-animation.
+    await new Promise((r) => setTimeout(r, SYNC_SETTLE_MS));
+    await OBR.player.setSyncView(false);
+  } catch (e) {
+    statusEl.textContent = `Could not sync the projector: ${e.message}`;
+    return;
+  }
+  // The off-transition above should already have captured it; doing it
+  // again is harmless and covers the case where the flag never changed.
+  const ok = await captureProjectorRect("synced to this view");
+  if (!ok) {
+    statusEl.textContent =
+      "Synced, but the viewport could not be read -- is a scene open?";
+  }
 }
 
 function describeProjector(reason) {
@@ -735,6 +796,19 @@ function wireUi() {
   describeAnchor();
 
   describeProjector();
+
+  const syncBtn = document.getElementById("syncProjectorBtn");
+  if (syncBtn) {
+    syncBtn.addEventListener("click", async () => {
+      syncBtn.disabled = true;
+      try {
+        await syncProjectorToThisView(
+          document.getElementById("projectorStatus"));
+      } finally {
+        syncBtn.disabled = false;
+      }
+    });
+  }
 
   const dbEl = document.getElementById("deadbandMm");
   if (dbEl) {
