@@ -36,6 +36,20 @@ let playAreaMm = null;
 // client, not of the shared scene. Storing it in the scene would make the
 // host and the projector overwrite each other's choice.
 let positionAnchor = localStorage.getItem("positionAnchor") || "scene";
+// Travel Mode: while true, positions are not pushed to the scene at all.
+// Deliberately NOT persisted -- leaving it on across a reload would look
+// exactly like a broken tracker, and it is meant to be held briefly while
+// the map is repositioned, not left set.
+let travelling = false;
+// The scene-space rectangle the projector is throwing onto the play area:
+// {x, y, w, h} in SCENE units. Scene units, not screen pixels, on purpose
+// -- Owlbear's "sync view" copies POSITION AND SCALE between clients, not
+// window size, so if the projector window is a different pixel size from
+// the host's the two show different extents and host pixels would be the
+// wrong ruler. A scene rectangle is what the projector actually covers,
+// whoever captured it.
+let projectorRect = null;
+let syncViewActive = false;
 let pollTimer = null;
 let isReady = false;
 
@@ -92,6 +106,13 @@ OBR.onReady(async () => {
   setStatus("Loading scene...", "ready");
 
   await loadMapping();
+  try {
+    const meta = await OBR.scene.getMetadata();
+    if (meta[PROJECTOR_RECT_KEY]) projectorRect = meta[PROJECTOR_RECT_KEY];
+  } catch (e) {
+    console.error("Could not load the stored projector view:", e);
+  }
+  watchSyncView();
 
   OBR.scene.items.onChange((items) => {
     sceneItemsCache = items;
@@ -128,10 +149,13 @@ OBR.onReady(async () => {
   });
 
   wireUi();
-  if (trackerUrl) {
-    document.getElementById("trackerUrl").value = trackerUrl;
-    startPolling();
-  }
+  // Restore BOTH saved fields. trackerAuth was being written to
+  // localStorage and never read back into its input, so the box looked
+  // empty every session even though polling was authenticating fine --
+  // which invites retyping it, and a typo there breaks the connection.
+  if (trackerUrl) document.getElementById("trackerUrl").value = trackerUrl;
+  if (trackerAuth) document.getElementById("trackerAuth").value = trackerAuth;
+  if (trackerUrl) startPolling();
   setStatus(trackerUrl ? "Connecting..." : "Enter tracker URL to connect", "ready");
 });
 
@@ -191,6 +215,10 @@ function autoMatchByName() {
 // Position sync
 // ---------------------------------------------------------------------
 async function pushPositions() {
+  // Travel Mode: stop writing positions, so sliding the map under
+  // stationary minis cannot drag their tokens through unexplored ground.
+  // Returning before any OBR call also makes this genuinely free.
+  if (travelling) return;
   if (!playAreaMm) return;
   const [widthMm, heightMm] = playAreaMm;
 
@@ -202,7 +230,13 @@ async function pushPositions() {
   // that had not changed.
   let viewportPx = null;
   let pxPerMm = null;
-  if (positionAnchor === "viewport") {
+  let rect = null;
+  if (positionAnchor === "projector") {
+    // While sync view is on the projector IS this view, so read it live;
+    // otherwise use the frozen rectangle captured when sync stopped.
+    rect = syncViewActive ? await visibleSceneRect() : projectorRect;
+    if (!rect) return;
+  } else if (positionAnchor === "viewport") {
     try {
       const [w, h] = await Promise.all([
         OBR.viewport.getWidth(),
@@ -273,7 +307,16 @@ async function pushPositions() {
     //               every poll -- which is also why panning then drags
     //               tokens across the map.
     let scenePoint;
-    if (positionAnchor === "viewport") {
+    if (positionAnchor === "projector") {
+      // The projector maps its whole visible scene rect onto the play
+      // area, so a token's millimetres are just a fraction of that rect.
+      // No screen pixels anywhere in this path, which is what makes it
+      // independent of the projector window's size.
+      scenePoint = {
+        x: rect.x + (pt.x_mm / widthMm) * rect.w,
+        y: rect.y + (pt.y_mm / heightMm) * rect.h,
+      };
+    } else if (positionAnchor === "viewport") {
       const screenPoint = {
         x: (pt.x_mm / widthMm) * viewportPx.w,
         y: (pt.y_mm / heightMm) * viewportPx.h,
@@ -464,9 +507,92 @@ async function runAutoZoomFromPlayArea(statusEl) {
 }
 
 // ---------------------------------------------------------------------
+// Projector view
+// ---------------------------------------------------------------------
+const PROJECTOR_RECT_KEY = "com.physicaltokentracker/projectorRect";
+
+// The scene rectangle currently visible in THIS client's viewport.
+// screen = (scene - position) * scale, so the visible scene rect is
+// position .. position + size/scale.
+async function visibleSceneRect() {
+  const [pos, scale, w, h] = await Promise.all([
+    OBR.viewport.getPosition(),
+    OBR.viewport.getScale(),
+    OBR.viewport.getWidth(),
+    OBR.viewport.getHeight(),
+  ]);
+  if (!(scale > 0) || !(w > 0) || !(h > 0)) return null;
+  return { x: pos.x, y: pos.y, w: w / scale, h: h / scale };
+}
+
+async function captureProjectorRect(reason) {
+  const rect = await visibleSceneRect();
+  if (!rect) return false;
+  projectorRect = rect;
+  try {
+    await OBR.scene.setMetadata({ [PROJECTOR_RECT_KEY]: rect });
+  } catch (e) {
+    console.error("Could not persist the projector rect:", e);
+  }
+  describeProjector(reason);
+  return true;
+}
+
+// Owlbear's sync view makes the players' viewports follow the GM's. So
+// while it is ON the projector is showing exactly what this client shows,
+// and the projector rect can simply be re-read every poll. The moment it
+// goes OFF the projector FREEZES at whatever was on screen at that
+// instant -- which is precisely the rect captured on the last tick before
+// the transition. That is why this watches the flag rather than asking
+// the operator to remember to press a button after every sync.
+function watchSyncView() {
+  const update = (players) => {
+    const wasActive = syncViewActive;
+    // Any synced non-GM client means a follower is mirroring this view.
+    syncViewActive = players.some((pl) => pl.syncView);
+    if (wasActive && !syncViewActive) {
+      // Sync just stopped: the projector is now parked where we are.
+      captureProjectorRect("captured when sync view was switched off");
+    } else if (!wasActive && syncViewActive) {
+      describeProjector("sync view is ON -- following this view live");
+    }
+  };
+  OBR.party.onChange(update);
+  OBR.party.getPlayers().then(update).catch((e) =>
+    console.error("Could not read the party:", e));
+}
+
+function describeProjector(reason) {
+  const el = document.getElementById("projectorStatus");
+  if (!el) return;
+  if (syncViewActive) {
+    el.textContent = "Sync view is ON -- the projector mirrors this view, "
+      + "so projector anchoring tracks it live.";
+    return;
+  }
+  if (!projectorRect) {
+    el.textContent = "No projector view stored yet. Line the map up on the "
+      + "projector, then press the button above (or toggle Owlbear's sync "
+      + "view off while it is aligned).";
+    return;
+  }
+  const r = projectorRect;
+  el.textContent = `Projector view: ${r.w.toFixed(0)}x${r.h.toFixed(0)} scene `
+    + `units at (${r.x.toFixed(0)}, ${r.y.toFixed(0)})`
+    + (reason ? ` -- ${reason}.` : ".");
+}
+
+// ---------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------
+let lastStatusText = "Loading...";
+let lastStatusClass = "ready";
+
 function setStatus(text, cls) {
+  // Remembered so Travel Mode can take over the status line and then
+  // hand it back, instead of leaving a stale "Travelling" banner up.
+  if (!travelling) { lastStatusText = text; lastStatusClass = cls; }
+  if (travelling) { text = "Travelling (position sync paused)"; cls = "warn"; }
   const el = document.getElementById("status");
   if (el) {
     el.textContent = text;
@@ -502,14 +628,41 @@ function wireUi() {
   }
   describeAnchor();
 
-  // Travel Mode's markup exists but its behaviour does not yet. A button
-  // that silently does nothing reads as a bug, so say so plainly instead.
+  const pinBtn = document.getElementById("pinProjectorBtn");
+  if (pinBtn) {
+    pinBtn.addEventListener("click", async () => {
+      const ok = await captureProjectorRect("pinned by hand");
+      if (!ok) {
+        const el = document.getElementById("projectorStatus");
+        if (el) el.textContent = "Could not read the viewport -- is a scene open?";
+      }
+    });
+  }
+  describeProjector();
+
   const travelBtn = document.getElementById("travelBtn");
   if (travelBtn) {
-    travelBtn.disabled = true;
-    const st = document.getElementById("travelStatus");
-    if (st) st.textContent = "Not implemented yet.";
+    travelBtn.addEventListener("click", () => {
+      travelling = !travelling;
+      describeTravel();
+    });
   }
+  describeTravel();
+}
+
+function describeTravel() {
+  const btn = document.getElementById("travelBtn");
+  const st = document.getElementById("travelStatus");
+  if (btn) btn.textContent = travelling ? "Stop travelling" : "Start travelling";
+  if (st) {
+    st.textContent = travelling
+      ? "TRAVELLING -- token positions are NOT being pushed. Move the map "
+        + "freely, then stop travelling to resume."
+      : "Not travelling -- token positions are being pushed to the scene.";
+  }
+  setStatus(
+    travelling ? "Travelling (position sync paused)" : lastStatusText,
+    travelling ? "warn" : lastStatusClass);
 }
 
 function describeAnchor() {
@@ -522,9 +675,38 @@ function describeAnchor() {
       + "projecting view at its calibrated home for physical alignment.";
 }
 
+// Signature of everything renderMappingUI() actually draws. The poll
+// loop calls that function every 150ms, and it rebuilds the list from
+// innerHTML = "" -- so an open <select> had its DOM node destroyed and
+// replaced under the operator's cursor within 150ms of being clicked,
+// which closes the dropdown instantly and made token assignment
+// impossible. Re-rendering only when the content has really changed
+// fixes that; the extra guard below covers the case where the content
+// changes WHILE a dropdown is open.
+function mappingSignature() {
+  return JSON.stringify([
+    latestPhysicalTokens.map((t) => [t.marker_id, t.name]),
+    virtualTokens.map((v) => [v.id, v.text?.plainText || v.name]),
+    mapping,
+  ]);
+}
+let _renderedSignature = null;
+
 function renderMappingUI() {
   const container = document.getElementById("mappingList");
   if (!container) return;
+
+  const sig = mappingSignature();
+  if (sig === _renderedSignature) return;
+
+  // Never yank the list out from under an open dropdown, even if
+  // something else changed -- the operator is mid-assignment. It will be
+  // redrawn on the next poll after the select loses focus.
+  const active = document.activeElement;
+  if (active && active.tagName === "SELECT" && container.contains(active)) {
+    return;
+  }
+  _renderedSignature = sig;
   container.innerHTML = "";
 
   if (latestPhysicalTokens.length === 0) {

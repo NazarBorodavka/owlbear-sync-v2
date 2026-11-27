@@ -286,7 +286,7 @@ class Tracker:
                  max_report_sigma_mm=12.0, max_unconfirmed_s=1.5,
                  uncorroborated_min_margin=0.25,
                  predict_publish_s=0.25,
-                 still_hold_s=20.0, still_tol_mm=2.0,
+                 still_hold_s=20.0, still_tol_mm=4.0,
                  max_step_dt=0.25):
         self.geom = geom
         self.px_per_mm = px_per_mm
@@ -359,6 +359,25 @@ class Tracker:
         # The fix for a slow host is to make it faster, not to report
         # older positions more confidently.
         self.predict_publish_s = predict_publish_s
+        # still_tol_mm was 2.0 and that was too tight to do its job.
+        # Measured two ways this session. The stationary-jitter run put
+        # worst-case drift of a genuinely untouched token at 2.06mm --
+        # i.e. normal noise alone could break the hold. And sweeping the
+        # tolerance over the `occluded` clip, the hold engages for 4
+        # frames at 2.0mm, 12 at 4.0mm and 36 at 6.0mm, with identity
+        # churn flat and published/frame slightly up. On `still` it makes
+        # no difference at all (0.54mm excursion at every setting), so
+        # widening costs the stationary case nothing.
+        #
+        # Not simply set to the 6.0mm that holds longest, because this
+        # number is also a worst-case ERROR bound: a still-held track
+        # reports misses == 0, so its position goes out as a fresh read
+        # (coasting=False) and the extension pushes it. Whatever this is
+        # set to is how far a token may be wrong while being published as
+        # confirmed. 4.0mm is chosen as the smallest value with real
+        # headroom over the 2.06mm it has to tolerate (1.9x), which is a
+        # tenth of a token base and a fifth of the token radius -- far too
+        # small to be a neighbouring marker.
         # A CONFIRMED track whose blob is still being found in the same
         # place may keep publishing for this much longer than
         # predict_publish_s, without a fresh id confirmation.

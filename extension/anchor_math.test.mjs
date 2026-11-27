@@ -60,5 +60,46 @@ const centreScreen = { x: (tok.x_mm/widthMm)*vw, y: (tok.y_mm/heightMm)*vh };
 check("play-area centre maps to viewport centre",
       Math.abs(centreScreen.x - vw/2) < 1e-6 && Math.abs(centreScreen.y - vh/2) < 1e-6);
 
+
+// --- projector anchoring ----------------------------------------------
+// The projector throws its whole visible SCENE rect onto the play area,
+// so a token's mm are a fraction of that rect. Screen pixels never enter,
+// which is what makes it survive the projector window being a different
+// size from the host's -- Owlbear's sync view copies position and scale
+// between clients, not window size.
+console.log("");
+const projectorAnchor = (pt, rect) => ({
+  x: rect.x + (pt.x_mm / widthMm) * rect.w,
+  y: rect.y + (pt.y_mm / heightMm) * rect.h,
+});
+const visibleSceneRect = (vp, w, h) =>
+  ({ x: vp.x, y: vp.y, w: w / vp.scale, h: h / vp.scale });
+
+const rectHome = visibleSceneRect(home, vw, vh);
+const pHome = projectorAnchor(tok, rectHome);
+console.log(`  projector rect:  ${rectHome.w.toFixed(1)}x${rectHome.h.toFixed(1)} at (${rectHome.x}, ${rectHome.y})`);
+console.log(`  projector anchor: ${fmt(pHome)}  (viewport anchor ${fmt(vHome)})`);
+check("projector anchoring equals viewport anchoring when the stored rect IS this view",
+      Math.abs(pHome.x - vHome.x) < 1e-6 && Math.abs(pHome.y - vHome.y) < 1e-6);
+
+// The point of the design: the HOST pans, the projector does not move,
+// and the token must not move either.
+const pPanned = projectorAnchor(tok, rectHome);     // rect is frozen
+check("host panning does not move a projector-anchored token",
+      pPanned.x === pHome.x && pPanned.y === pHome.y);
+
+// A projector window of a DIFFERENT pixel size, synced to the same
+// position+scale, covers a different scene rect -- and anchoring must
+// follow the projector's rect, not the host's.
+const projWindow = visibleSceneRect(home, 2560, 1440);
+const pBig = projectorAnchor(tok, projWindow);
+console.log(`  4K-ish projector rect: ${projWindow.w.toFixed(1)}x${projWindow.h.toFixed(1)}`);
+check("a differently-sized projector window gives a different anchor",
+      Math.abs(pBig.x - pHome.x) > 1.0);
+// ...and the play-area centre still lands at the centre of THAT rect.
+check("play-area centre maps to the centre of the projector rect",
+      Math.abs(pBig.x - (projWindow.x + projWindow.w / 2)) < 1e-6 &&
+      Math.abs(pBig.y - (projWindow.y + projWindow.h / 2)) < 1e-6);
+
 console.log(fail ? `\n  ${fail} FAILED` : "\n  all anchor-math checks passed");
 process.exit(fail ? 1 : 0);

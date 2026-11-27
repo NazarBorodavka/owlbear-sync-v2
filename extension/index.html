@@ -49,20 +49,37 @@
       the projecting view sits at its calibrated home position.
     </label>
     <label>
-      <input type="radio" name="anchor" id="anchorViewport" value="viewport" />
-      <b>This screen (viewport)</b> -- a token is placed where it
-      physically sits on the table <i>as this client currently sees the
-      map</i>, so it stays under its mini through any pan or zoom. The
-      cost is that panning then moves tokens across the map, which can
-      walk them through unexplored ground.
+      <input type="radio" name="anchor" id="anchorProjector" value="projector" />
+      <b>Projector view</b> -- the usual choice. A token is placed where
+      it physically sits on the table as seen <i>on the projector</i>, so
+      minis and their tokens stay aligned no matter where you look. While
+      Owlbear's sync view is on, the projector mirrors you and this
+      tracks it live; when you switch sync off, the projector freezes and
+      so does this, at exactly the view that was being shown.
     </label>
-    <p class="hint">
-      Owlbear only exposes the <i>local</i> viewport, so "this screen"
-      means whichever machine this panel is open in. To anchor to the
-      projector, run this panel on the projector client. Only ONE client
-      should push positions -- two will fight over the same items.
-    </p>
+    <label>
+      <input type="radio" name="anchor" id="anchorViewport" value="viewport" />
+      <b>This screen (viewport)</b> -- same idea but against
+      <i>your own</i> live view, whatever it is showing.
+    </label>
     <p id="anchorStatus" class="hint"></p>
+    <p class="hint">
+      Only ONE client should push positions -- two will fight over the
+      same items.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h3>Projector View</h3>
+    <p class="hint">
+      What rectangle of the map the projector is throwing onto the table.
+      Captured automatically whenever you switch Owlbear's sync view
+      <i>off</i>, since that is the moment the projector stops following
+      you and parks on the view it was showing. Press below to set it by
+      hand instead.
+    </p>
+    <button id="pinProjectorBtn">Pin current view as the projector view</button>
+    <p id="projectorStatus" class="hint"></p>
   </section>
 
   <section class="panel">
