@@ -111,6 +111,8 @@ class TrackerRuntime:
         # staleness check is indistinguishable from a working feed right
         # up until it silently freezes.
         self._preview_at = 0.0
+        # When a client last asked for the video feed.
+        self._feed_wanted_at = 0.0
         # Guards start(): see there for why two concurrent starts used to
         # leave an orphaned capture holding the camera's only session.
         self._start_lock = threading.Lock()
@@ -389,6 +391,10 @@ class TrackerRuntime:
     PREVIEW_W = 960
     PREVIEW_MAX_AGE_S = 2.0
     PREVIEW_HZ = 10.0
+    # How long after the last feed request to keep producing
+    # previews. Comfortably longer than the browser's gap between
+    # MJPEG frames, so an attached viewer never flickers.
+    PREVIEW_IDLE_S = 3.0
 
     def _cache_preview_raw(self, gray):
         """Refresh ONLY the raw-camera preview. Used on the
@@ -423,11 +429,20 @@ class TrackerRuntime:
         """
         if _cv2 is None:
             return
-        # The dashboard consumes this at 10fps at most, and it costs a
-        # real slice of the frame budget (measured 37.8ms/frame on the
-        # deployed server -- 17% of everything, spent producing frames
-        # nobody looks at). Refresh it at PREVIEW_HZ and skip otherwise.
+        # Skip entirely when nobody is watching.
+        #
+        # This costs a real slice of the frame budget -- measured
+        # 39.9ms/frame on the deployed server, 21% of everything -- and
+        # most of the time it is spent resampling 4K images for a feed
+        # with no client attached.
+        #
+        # A rate limit alone was tried and did nothing: capping at 10Hz
+        # never skips when the pipeline is only managing 5fps, because
+        # frames are already further apart than the limit. Demand, not
+        # rate, is the thing worth gating on.
         now_t = time.time()
+        if (now_t - self._feed_wanted_at) > self.PREVIEW_IDLE_S:
+            return
         if (now_t - self._preview_at) < (1.0 / self.PREVIEW_HZ):
             return
         try:
@@ -477,6 +492,7 @@ class TrackerRuntime:
         """
         import cv2
         with self._lock:
+            self._feed_wanted_at = time.time()
             cached = self._preview_raw if view == "raw" else self._preview_rect
             tracks = list(self._preview_tracks)
             age = time.time() - self._preview_at
