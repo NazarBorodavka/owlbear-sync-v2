@@ -20,7 +20,30 @@ const POLL_INTERVAL_MS = 150;     // ~6.7Hz poll of /api/tokens -- see README fo
                                    // at 15fps+, and a local-network JSON poll at this
                                    // rate costs single-digit ms, nowhere near a
                                    // bottleneck worth a WebSocket's added complexity.
-const SMOOTH_RATE = 20;           // 1/s -- higher = snappier, lower = smoother but laggier
+// Exponential easing rate, 1/s. Was declared in v2 and never used -- the
+// scene was written with the raw tracked position each poll, so a token
+// advanced in ~150ms steps. 20/s is a ~50ms time constant: visibly a
+// glide rather than a jump, without lagging far enough behind a dragged
+// mini to look detached from it.
+//
+// Steady-state lag behind a mini moving at constant speed is about
+// speed/rate, so at 20/s: 5mm at a 100mm/s nudge, 25mm at a 500mm/s
+// flick -- under a token base even at the fast end. Lower it for a more
+// obvious glide at the cost of trailing further behind the hand; most of
+// the visible improvement comes from ticking at PUSH_INTERVAL_MS at all,
+// which turns ~7 scene writes a second into 20.
+const SMOOTH_RATE = 20;
+// A step larger than this is not a hand moving a mini; it is a
+// lift-and-place or a re-acquisition. Eased, those would slide the token
+// across everything in between. 150mm is well above what continuous
+// motion produces between polls -- a brisk 500mm/s drag covers ~75mm in
+// a 150ms poll -- so real drags stay smooth and only genuine relocations
+// snap.
+const SNAP_MM = 150.0;
+// 20Hz. The poll runs at 150ms, which is too coarse to ease against, but
+// pushing at display rate would broadcast a scene update 60 times a
+// second to every connected client.
+const PUSH_INTERVAL_MS = 50;
 const MIN_MOVE_SCENE_UNITS = 0.5;
 
 let trackerUrl = localStorage.getItem("trackerUrl") || "";
@@ -171,6 +194,9 @@ function startPolling() {
 function stopPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
+  if (pushTimer) clearInterval(pushTimer);
+  pushTimer = null;
+  lastPushAt = 0;
 }
 
 async function pollOnce() {
@@ -214,131 +240,150 @@ function autoMatchByName() {
 // ---------------------------------------------------------------------
 // Position sync
 // ---------------------------------------------------------------------
-async function pushPositions() {
-  // Travel Mode: stop writing positions, so sliding the map under
-  // stationary minis cannot drag their tokens through unexplored ground.
-  // Returning before any OBR call also makes this genuinely free.
-  if (travelling) return;
-  if (!playAreaMm) return;
-  const [widthMm, heightMm] = playAreaMm;
+// Smoothing happens in MILLIMETRE space, not scene space, and that is
+// what makes a physical drag and a map re-anchor behave differently
+// without either being special-cased:
+//
+//   a mini is moved      -> its millimetres change -> eased, so the
+//                           token glides to the new spot
+//   the map is re-synced -> the mm->scene CONVERSION changes while the
+//                           millimetres do not -> every token jumps at
+//                           once, which is what should happen; the map
+//                           moved, not the minis
+//
+// Easing in scene space would smear that jump into a slow slide of every
+// token across the map, which is exactly the "tokens walking" being
+// avoided elsewhere.
+let targetMm = {};        // marker_id -> {x, y, name} most recent READ
+let smoothMm = {};        // marker_id -> {x, y} what is on the map now
+let anchorCtx = null;     // mm -> scene conversion, refreshed per poll
+let pushTimer = null;
+let lastPushAt = 0;
 
-  // Both of these are properties of the SCENE or the CLIENT, not of a
-  // token, so they are fetched once per poll rather than once per token.
-  // The grid used to be queried inside the loop below: six tokens at a
-  // 150ms poll meant ~80 SDK round trips a second (each one a
-  // postMessage into the parent frame and back) to re-read two numbers
-  // that had not changed.
-  let viewportPx = null;
-  let pxPerMm = null;
-  let rect = null;
-  if (positionAnchor === "projector") {
-    // While sync view is on the projector IS this view, so read it live;
-    // otherwise use the frozen rectangle captured when sync stopped.
-    rect = syncViewActive ? await visibleSceneRect() : projectorRect;
-    if (!rect) return;
-  } else if (positionAnchor === "viewport") {
-    try {
+// Refreshed once per poll rather than per token: these are properties of
+// the scene or the client. The grid used to be queried inside the token
+// loop -- six tokens at a 150ms poll meant ~80 SDK round trips a second
+// to re-read two numbers that had not changed.
+async function refreshAnchorContext() {
+  if (!playAreaMm) { anchorCtx = null; return; }
+  const [widthMm, heightMm] = playAreaMm;
+  try {
+    if (positionAnchor === "projector") {
+      // While sync view is on the projector IS this view, so read it
+      // live; otherwise use the rect frozen when sync stopped.
+      const rect = syncViewActive ? await visibleSceneRect() : projectorRect;
+      if (!rect) { anchorCtx = null; return; }
+      anchorCtx = { mode: "projector", widthMm, heightMm, rect };
+    } else if (positionAnchor === "viewport") {
       const [w, h] = await Promise.all([
         OBR.viewport.getWidth(),
         OBR.viewport.getHeight(),
       ]);
-      if (!(w > 0) || !(h > 0)) return;
-      viewportPx = { w, h };
-    } catch (e) {
-      return;   // viewport not ready yet; try again next poll
-    }
-  } else {
-    // Only scene anchoring needs the grid, so a scene with no grid
-    // configured still syncs in viewport mode.
-    try {
+      if (!(w > 0) || !(h > 0)) { anchorCtx = null; return; }
+      anchorCtx = { mode: "viewport", widthMm, heightMm, w, h };
+    } else {
+      // Only scene anchoring needs the grid, so a scene with no grid
+      // configured still syncs in the other two modes.
       const [dpi, scale] = await Promise.all([
         OBR.scene.grid.getDpi(),
         OBR.scene.grid.getScale(),
       ]);
       const mmPerCell = scale.parsed.multiplier * mmPerUnit(scale.parsed.unit);
-      if (!(dpi > 0) || !(mmPerCell > 0)) return;
-      pxPerMm = dpi / mmPerCell;
-    } catch (e) {
-      return;   // grid not ready yet; try again next poll
+      if (!(dpi > 0) || !(mmPerCell > 0)) { anchorCtx = null; return; }
+      anchorCtx = { mode: "scene", widthMm, heightMm, pxPerMm: dpi / mmPerCell };
     }
+  } catch (e) {
+    anchorCtx = null;   // not ready yet; try again next poll
   }
+}
 
-  const updates = [];
+async function mmToScene(xMm, yMm, ctx) {
+  if (ctx.mode === "projector") {
+    // The projector maps its whole visible scene rect onto the play
+    // area, so a token's millimetres are just a fraction of that rect.
+    // No screen pixels in this path at all, which is what makes it
+    // independent of the projector window's pixel size.
+    return {
+      x: ctx.rect.x + (xMm / ctx.widthMm) * ctx.rect.w,
+      y: ctx.rect.y + (yMm / ctx.heightMm) * ctx.rect.h,
+    };
+  }
+  if (ctx.mode === "viewport") {
+    return OBR.viewport.inverseTransformPoint({
+      x: (xMm / ctx.widthMm) * ctx.w,
+      y: (yMm / ctx.heightMm) * ctx.h,
+    });
+  }
+  return { x: xMm * ctx.pxPerMm, y: yMm * ctx.pxPerMm };
+}
+
+// Called from the poll: records WHERE each token is, and does not touch
+// the scene. Separating "what the camera says" from "what gets drawn"
+// is what lets the two run at different rates -- the tracker reports at
+// its own pace, the easing runs at PUSH_INTERVAL_MS.
+function updateTargets() {
   for (const pt of latestPhysicalTokens) {
     // Only act on a position that was actually READ this frame.
     //
     // The tracker also publishes HELD positions -- the last confirmed
     // place of a token whose code it cannot currently read (a hand over
     // it, a mini covering part of the ring). Those are correct as "where
-    // it was", but they are not news, and pushing them would let a
-    // stale or slightly-off position overwrite a good one in the scene.
-    // Skipping them leaves whatever is already on the map untouched,
-    // which is the right behaviour for a token that is merely
-    // unreadable: it has not moved as far as anyone knows.
+    // it was", but they are not news, and pushing them would let a stale
+    // or slightly-off position overwrite a good one. Skipping them
+    // leaves whatever is on the map untouched, which is right for a
+    // token that is merely unreadable: it has not moved as far as
+    // anyone knows.
     if (pt.coasting) continue;
-    const itemId = mapping[String(pt.marker_id)];
+    targetMm[String(pt.marker_id)] = { x: pt.x_mm, y: pt.y_mm, name: pt.name };
+  }
+}
+
+async function pushTick() {
+  if (travelling) return;          // see Travel Mode
+  if (!anchorCtx) return;
+
+  const now = performance.now();
+  const dt = lastPushAt ? Math.min((now - lastPushAt) / 1000, 0.5) : 0;
+  lastPushAt = now;
+  // Frame-rate independent exponential easing: the fraction covered per
+  // tick is derived from dt, so a slow tick does not crawl and a fast
+  // one does not overshoot.
+  const alpha = dt > 0 ? 1 - Math.exp(-SMOOTH_RATE * dt) : 1;
+
+  const updates = [];
+  for (const [key, tgt] of Object.entries(targetMm)) {
+    const itemId = mapping[key];
     if (!itemId) continue;
     const targetItem = sceneItemsCache.find((i) => i.id === itemId);
     if (!targetItem) continue;
 
-    // mm position -> OBR scene units (scene-pixel space, independent of
-    // viewport pan/zoom). OBR's own grid.getDpi() is scene pixels per
-    // grid cell; dividing by how many real-world mm one cell represents
-    // (cell count x the grid's configured unit size) gives scene pixels
-    // per real mm directly. Deliberately NOT v1's screen-pixel +
-    // viewport.inverseTransformPoint() approach -- that depended on
-    // whatever the LOCAL player's viewport currently shows, which
-    // breaks the moment auto-zoom (below) changes viewport scale
-    // mid-session, or if two clients are looking at different areas.
-    // Two anchorings, and the difference is which thing stays fixed when
-    // the map is panned.
-    //
-    //   scene    -- play-area origin IS the map origin. Viewport
-    //               independent, so every client agrees and nothing
-    //               moves on the map when someone pans; but physical
-    //               alignment only holds while the projecting view is
-    //               parked at its calibrated home position.
-    //   viewport -- convert mm to a point on THIS client's screen (the
-    //               projected image is assumed to fill the play area,
-    //               the same assumption runAutoZoomFromPlayArea() makes
-    //               and checks), then back into scene space. The token
-    //               stays under its mini through any pan or zoom,
-    //               because it is re-derived from the live viewport
-    //               every poll -- which is also why panning then drags
-    //               tokens across the map.
-    let scenePoint;
-    if (positionAnchor === "projector") {
-      // The projector maps its whole visible scene rect onto the play
-      // area, so a token's millimetres are just a fraction of that rect.
-      // No screen pixels anywhere in this path, which is what makes it
-      // independent of the projector window's size.
-      scenePoint = {
-        x: rect.x + (pt.x_mm / widthMm) * rect.w,
-        y: rect.y + (pt.y_mm / heightMm) * rect.h,
-      };
-    } else if (positionAnchor === "viewport") {
-      const screenPoint = {
-        x: (pt.x_mm / widthMm) * viewportPx.w,
-        y: (pt.y_mm / heightMm) * viewportPx.h,
-      };
-      try {
-        scenePoint = await OBR.viewport.inverseTransformPoint(screenPoint);
-      } catch (e) {
-        continue;   // viewport not ready; try again next poll
-      }
+    let cur = smoothMm[key];
+    const far = cur && Math.hypot(tgt.x - cur.x, tgt.y - cur.y) > SNAP_MM;
+    if (!cur || far) {
+      // First sight of this token, or a step too large to be a hand
+      // moving it -- a lift-and-place, or a re-acquisition after the
+      // code was unreadable for a while. Easing across that would slide
+      // the token over everything in between; go straight there.
+      cur = { x: tgt.x, y: tgt.y };
     } else {
-      scenePoint = { x: pt.x_mm * pxPerMm, y: pt.y_mm * pxPerMm };
+      cur = { x: cur.x + (tgt.x - cur.x) * alpha,
+              y: cur.y + (tgt.y - cur.y) * alpha };
     }
+    smoothMm[key] = cur;
 
+    const scenePoint = await mmToScene(cur.x, cur.y, anchorCtx);
     const dist = Math.hypot(
       targetItem.position.x - scenePoint.x,
       targetItem.position.y - scenePoint.y
     );
     const needsNameUpdate =
-      pt.name && targetItem.name !== pt.name &&
-      !(targetItem.text && targetItem.text.plainText === pt.name);
+      tgt.name && targetItem.name !== tgt.name &&
+      !(targetItem.text && targetItem.text.plainText === tgt.name);
+    // Below the threshold the easing has effectively arrived, so this
+    // also stops the ticking once everything is at rest -- no endless
+    // sub-pixel writes to a scene nobody is moving.
     if (dist > MIN_MOVE_SCENE_UNITS || needsNameUpdate) {
-      updates.push({ id: itemId, position: scenePoint, name: pt.name });
+      updates.push({ id: itemId, position: scenePoint, name: tgt.name });
     }
   }
 
@@ -357,6 +402,19 @@ async function pushPositions() {
       }
     }
   );
+}
+
+function startPushLoop() {
+  if (pushTimer) return;
+  pushTimer = setInterval(() => { pushTick().catch(() => {}); },
+                          PUSH_INTERVAL_MS);
+}
+
+async function pushPositions() {
+  if (travelling) return;
+  updateTargets();
+  await refreshAnchorContext();
+  startPushLoop();
 }
 
 function mmPerUnit(unit) {
