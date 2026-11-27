@@ -30,6 +30,12 @@ let sceneItemsCache = [];
 let virtualTokens = [];
 let latestPhysicalTokens = [];
 let playAreaMm = null;
+// "scene" | "viewport" -- see pushPositions() for what each means.
+// Deliberately localStorage and NOT scene metadata: it says which screen
+// this particular machine should anchor to, so it is a property of the
+// client, not of the shared scene. Storing it in the scene would make the
+// host and the projector overwrite each other's choice.
+let positionAnchor = localStorage.getItem("positionAnchor") || "scene";
 let pollTimer = null;
 let isReady = false;
 
@@ -188,6 +194,41 @@ async function pushPositions() {
   if (!playAreaMm) return;
   const [widthMm, heightMm] = playAreaMm;
 
+  // Both of these are properties of the SCENE or the CLIENT, not of a
+  // token, so they are fetched once per poll rather than once per token.
+  // The grid used to be queried inside the loop below: six tokens at a
+  // 150ms poll meant ~80 SDK round trips a second (each one a
+  // postMessage into the parent frame and back) to re-read two numbers
+  // that had not changed.
+  let viewportPx = null;
+  let pxPerMm = null;
+  if (positionAnchor === "viewport") {
+    try {
+      const [w, h] = await Promise.all([
+        OBR.viewport.getWidth(),
+        OBR.viewport.getHeight(),
+      ]);
+      if (!(w > 0) || !(h > 0)) return;
+      viewportPx = { w, h };
+    } catch (e) {
+      return;   // viewport not ready yet; try again next poll
+    }
+  } else {
+    // Only scene anchoring needs the grid, so a scene with no grid
+    // configured still syncs in viewport mode.
+    try {
+      const [dpi, scale] = await Promise.all([
+        OBR.scene.grid.getDpi(),
+        OBR.scene.grid.getScale(),
+      ]);
+      const mmPerCell = scale.parsed.multiplier * mmPerUnit(scale.parsed.unit);
+      if (!(dpi > 0) || !(mmPerCell > 0)) return;
+      pxPerMm = dpi / mmPerCell;
+    } catch (e) {
+      return;   // grid not ready yet; try again next poll
+    }
+  }
+
   const updates = [];
   for (const pt of latestPhysicalTokens) {
     // Only act on a position that was actually READ this frame.
@@ -215,15 +256,35 @@ async function pushPositions() {
     // whatever the LOCAL player's viewport currently shows, which
     // breaks the moment auto-zoom (below) changes viewport scale
     // mid-session, or if two clients are looking at different areas.
+    // Two anchorings, and the difference is which thing stays fixed when
+    // the map is panned.
+    //
+    //   scene    -- play-area origin IS the map origin. Viewport
+    //               independent, so every client agrees and nothing
+    //               moves on the map when someone pans; but physical
+    //               alignment only holds while the projecting view is
+    //               parked at its calibrated home position.
+    //   viewport -- convert mm to a point on THIS client's screen (the
+    //               projected image is assumed to fill the play area,
+    //               the same assumption runAutoZoomFromPlayArea() makes
+    //               and checks), then back into scene space. The token
+    //               stays under its mini through any pan or zoom,
+    //               because it is re-derived from the live viewport
+    //               every poll -- which is also why panning then drags
+    //               tokens across the map.
     let scenePoint;
-    try {
-      const dpi = await OBR.scene.grid.getDpi();
-      const scale = await OBR.scene.grid.getScale();
-      const mmPerCell = scale.parsed.multiplier * mmPerUnit(scale.parsed.unit);
-      const pxPerMm = dpi / mmPerCell;
+    if (positionAnchor === "viewport") {
+      const screenPoint = {
+        x: (pt.x_mm / widthMm) * viewportPx.w,
+        y: (pt.y_mm / heightMm) * viewportPx.h,
+      };
+      try {
+        scenePoint = await OBR.viewport.inverseTransformPoint(screenPoint);
+      } catch (e) {
+        continue;   // viewport not ready; try again next poll
+      }
+    } else {
       scenePoint = { x: pt.x_mm * pxPerMm, y: pt.y_mm * pxPerMm };
-    } catch (e) {
-      continue; // grid not ready yet; try again next poll
     }
 
     const dist = Math.hypot(
@@ -312,6 +373,96 @@ async function runAutoZoom(statusEl) {
     `now ${TOKEN_BASE_MM}mm/cell to match the token base.`;
 }
 
+// Analytic auto-zoom: no camera measurement, from the play-area size.
+//
+// This is the one that works with the near-IR bandpass filter fitted.
+// runAutoZoom() above measures the projected grid IN THE CAMERA IMAGE,
+// which was fine when the camera could see the projector -- but the
+// filter exists precisely to make projector light invisible to it, so
+// that measurement now finds nothing to measure. The geometry is fully
+// determined without it:
+//
+//   the projector throws the whole OBR viewport onto the play area, so
+//     screen px per real mm  =  viewport px / play-area mm
+//   a grid cell is dpi scene px, shown at `scale` screen px per scene px,
+//     so its real size is     dpi * scale / (screen px per mm)
+//   setting that equal to TOKEN_BASE_MM and solving:
+//     scale = TOKEN_BASE_MM * (screen px per mm) / dpi
+//
+// One assumption, and it is load-bearing: the projected image fills the
+// calibrated play area. It is checked below rather than trusted -- the
+// two axes give an independent estimate of screen-px-per-mm each, and if
+// the projection does NOT line up with the play area they disagree.
+async function runAutoZoomFromPlayArea(statusEl) {
+  if (!playAreaMm) {
+    statusEl.textContent =
+      "Need the tracker connected and the play area calibrated first " +
+      "(this reads the play-area size from /api/tokens).";
+    return;
+  }
+  const [widthMm, heightMm] = playAreaMm;
+
+  let vw, vh, dpi;
+  try {
+    [vw, vh, dpi] = await Promise.all([
+      OBR.viewport.getWidth(),
+      OBR.viewport.getHeight(),
+      OBR.scene.grid.getDpi(),
+    ]);
+  } catch (e) {
+    statusEl.textContent = `Auto-zoom failed reading the viewport: ${e.message}`;
+    return;
+  }
+  if (!(dpi > 0) || !(vw > 0) || !(vh > 0)) {
+    statusEl.textContent =
+      `Auto-zoom failed: viewport ${vw}x${vh}, grid dpi ${dpi} -- ` +
+      "is a scene open with its grid configured?";
+    return;
+  }
+
+  const pxPerMmX = vw / widthMm;
+  const pxPerMmY = vh / heightMm;
+  // Relative disagreement between the two axes. Zero when the viewport
+  // and the play area have the same aspect ratio, which is what "the
+  // projection fills the play area" implies.
+  const skew = Math.abs(pxPerMmX - pxPerMmY) / Math.min(pxPerMmX, pxPerMmY);
+  const pxPerMm = 0.5 * (pxPerMmX + pxPerMmY);
+
+  const newScale = (TOKEN_BASE_MM * pxPerMm) / dpi;
+  if (!isFinite(newScale) || newScale <= 0) {
+    statusEl.textContent = `Auto-zoom computed a nonsense scale (${newScale}); aborted.`;
+    return;
+  }
+
+  // Scale ONLY -- deliberately not viewport position. Re-centring would
+  // slide the map under minis that have not moved, which is exactly the
+  // "tokens walk across the map when you pan" problem; choosing what is
+  // under the table is a separate, deliberate action.
+  try {
+    await OBR.viewport.setScale(newScale);
+    await OBR.scene.setMetadata({
+      "com.physicaltokentracker/homeScale": newScale,
+    });
+  } catch (e) {
+    statusEl.textContent = `Auto-zoom could not apply the scale: ${e.message}`;
+    return;
+  }
+
+  const cellMm = (dpi * newScale) / pxPerMm;
+  let msg =
+    `Done: 1 cell is now ${cellMm.toFixed(1)}mm on the table ` +
+    `(target ${TOKEN_BASE_MM}mm). Play area ${widthMm}x${heightMm}mm ` +
+    `shown in a ${vw}x${vh}px viewport, grid dpi ${dpi}, scale ${newScale.toFixed(4)}.`;
+  if (skew > 0.02) {
+    msg +=
+      ` WARNING: the two axes disagree by ${(100 * skew).toFixed(1)}% ` +
+      `(${pxPerMmX.toFixed(3)} vs ${pxPerMmY.toFixed(3)} px/mm), so the ` +
+      `projected image probably does not line up with the calibrated ` +
+      `play area. Treat this zoom as approximate until that is fixed.`;
+  }
+  statusEl.textContent = msg;
+}
+
 // ---------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------
@@ -335,6 +486,40 @@ function wireUi() {
   document.getElementById("autoZoomBtn").addEventListener("click", () => {
     runAutoZoom(document.getElementById("autoZoomStatus"));
   });
+
+  document.getElementById("autoZoomCalcBtn").addEventListener("click", () => {
+    runAutoZoomFromPlayArea(document.getElementById("autoZoomStatus"));
+  });
+
+  for (const el of document.querySelectorAll('input[name="anchor"]')) {
+    el.checked = el.value === positionAnchor;
+    el.addEventListener("change", () => {
+      if (!el.checked) return;
+      positionAnchor = el.value;
+      localStorage.setItem("positionAnchor", positionAnchor);
+      describeAnchor();
+    });
+  }
+  describeAnchor();
+
+  // Travel Mode's markup exists but its behaviour does not yet. A button
+  // that silently does nothing reads as a bug, so say so plainly instead.
+  const travelBtn = document.getElementById("travelBtn");
+  if (travelBtn) {
+    travelBtn.disabled = true;
+    const st = document.getElementById("travelStatus");
+    if (st) st.textContent = "Not implemented yet.";
+  }
+}
+
+function describeAnchor() {
+  const el = document.getElementById("anchorStatus");
+  if (!el) return;
+  el.textContent = positionAnchor === "viewport"
+    ? "Anchored to THIS client's view -- tokens follow the table through "
+      + "pan and zoom, and panning moves them across the map."
+    : "Anchored to the map -- tokens hold their map position; keep the "
+      + "projecting view at its calibrated home for physical alignment.";
 }
 
 function renderMappingUI() {

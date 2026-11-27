@@ -20,13 +20,49 @@
   <section class="panel">
     <h3>Map Auto-Zoom</h3>
     <p class="hint">
-      Turn on Owlbear Rodeo's grid overlay, then click below -- the
-      camera measures the projected grid and matches it to your token
-      base size automatically.
+      Sets the zoom so one grid square is one token base (40mm) on the
+      table. Use <b>from play-area size</b>: it needs nothing but the
+      calibration you already have.
     </p>
-    <button id="autoZoomBtn">Auto-Zoom (measure projected grid)</button>
     <button id="autoZoomCalcBtn">Auto-Zoom (from play-area size)</button>
+    <p class="hint">
+      The option below measures the projected grid through the camera
+      instead. It does not work with the near-IR bandpass filter fitted
+      -- the filter's whole job is to make projector light invisible to
+      the camera, so there is no grid left for it to find. Kept only for
+      a setup without the filter.
+    </p>
+    <button id="autoZoomBtn">Auto-Zoom (measure projected grid, needs no IR filter)</button>
     <p id="autoZoomStatus" class="hint"></p>
+  </section>
+
+  <section class="panel">
+    <h3>Position Anchor</h3>
+    <p class="hint">
+      What a physical token's millimetre position is measured against.
+    </p>
+    <label>
+      <input type="radio" name="anchor" id="anchorScene" value="scene" />
+      <b>Map (scene coordinates)</b> -- play-area origin is the map
+      origin. Every client agrees on where a token is, and panning the
+      map carries the tokens with it. Physical alignment holds only while
+      the projecting view sits at its calibrated home position.
+    </label>
+    <label>
+      <input type="radio" name="anchor" id="anchorViewport" value="viewport" />
+      <b>This screen (viewport)</b> -- a token is placed where it
+      physically sits on the table <i>as this client currently sees the
+      map</i>, so it stays under its mini through any pan or zoom. The
+      cost is that panning then moves tokens across the map, which can
+      walk them through unexplored ground.
+    </label>
+    <p class="hint">
+      Owlbear only exposes the <i>local</i> viewport, so "this screen"
+      means whichever machine this panel is open in. To anchor to the
+      projector, run this panel on the projector client. Only ONE client
+      should push positions -- two will fight over the same items.
+    </p>
+    <p id="anchorStatus" class="hint"></p>
   </section>
 
   <section class="panel">

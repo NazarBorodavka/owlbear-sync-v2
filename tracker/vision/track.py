@@ -338,6 +338,26 @@ class Tracker:
         # covers those without ever becoming open-ended extrapolation,
         # and beyond it the track stays ALIVE but silent, so identity
         # survives and re-acquisition is instant when it decodes again.
+        #
+        # CAUTION, and the "2-4 frames" above is why: that is 20fps
+        # arithmetic, the rate the corpus was recorded at. This is a
+        # WALL-CLOCK window, so what it means in frames scales with the
+        # frame rate, and the deployed server has run as low as 5fps
+        # (200ms/frame) -- where 250ms is 1.25 frames and the window
+        # never fires at all. Measured by replaying the corpus decimated
+        # to 10 and 5fps with `now` advanced to match: coast-publications
+        # go 7 -> 0 -> 0 on `slow` and 4 -> 0 -> 0 on `occluded`.
+        #
+        # Deliberately NOT widened in response. Two things make it the
+        # wrong fix: report_pos holds the LAST MEASURED position while
+        # coasting rather than extrapolating (see Track.report_pos), so a
+        # wider window publishes a staler position rather than a bolder
+        # guess; and the Owlbear extension -- the consumer this exists
+        # for -- skips coasting positions outright, so it never reads
+        # them anyway. The accompanying churn rise at low fps (0 -> 3 on
+        # `slow`) tracks having 4x fewer measurements, not this constant.
+        # The fix for a slow host is to make it faster, not to report
+        # older positions more confidently.
         self.predict_publish_s = predict_publish_s
         # A CONFIRMED track whose blob is still being found in the same
         # place may keep publishing for this much longer than
