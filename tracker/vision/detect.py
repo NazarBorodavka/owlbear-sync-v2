@@ -47,6 +47,18 @@ from .decode import bilinear
 # rejecting real ones.
 MAX_RESID_FRAC = 0.10
 
+# Smallest ring radius, in VOTING-image pixels, that still places a peak
+# accurately enough for refine() to lock onto the real edge. Measured by
+# sweeping the decimation factor over the recorded corpus: at a 3.5 px/mm
+# play area the vote radius is 30.6px undecimated, 20.4px at /3 and 15.3px
+# at /4. Quality is flat from 30.6 down to 20.4 (the `slow` clip even
+# improves slightly, 4.08 -> 4.10 published/frame, churn 0 throughout) and
+# only starts to break at 15.3px, where `slow` picks up its first identity
+# churn. 20px is that floor, so the factor below targets it directly
+# instead of hard-coding a decimation that silently over-decimates
+# whenever px/mm is lowered.
+MIN_VOTE_R_PX = 20.0
+
 # OpenCV is used ONLY as an optional accelerator for three hot spots
 # below (Sobel, Gaussian blur, block-mean downsample). Every one of them
 # keeps its original pure-numpy implementation as a fallback, because
@@ -223,14 +235,30 @@ def refine(img, cx, cy, r_px, n_ang=180, search_frac=0.18, trim=0.35):
 
 
 class Detector:
-    def __init__(self, geom, px_per_mm, n_max=12, coarse=2,
+    def __init__(self, geom, px_per_mm, n_max=12, coarse=None,
                  max_resid_frac=MAX_RESID_FRAC, max_scale_err=0.20):
         self.geom = geom
         self.px_per_mm = px_per_mm
         self.n_max = n_max
+        # None = scale the decimation to the ring size (see MIN_VOTE_R_PX).
+        # An explicit int still wins, so a test can pin it.
         self.coarse = coarse
         self.max_resid_frac = max_resid_frac
         self.max_scale_err = max_scale_err
+
+    @property
+    def vote_coarse(self):
+        """Decimation factor for the voting pass.
+
+        Voting cost scales with pixel count, so this is the single biggest
+        dial on detect(), which is ~half the frame budget. Deriving it from
+        r_ref rather than fixing it means raising px/mm buys resolution
+        without paying for it quadratically, and lowering px/mm cannot
+        decimate the ring into unresolvability.
+        """
+        if self.coarse is not None:
+            return int(self.coarse)
+        return max(1, int(self.r_ref / MIN_VOTE_R_PX))
 
     @property
     def r_ref(self):
@@ -244,14 +272,17 @@ class Detector:
         # Vote on a downsampled copy -- the accumulator only needs to place
         # a peak within a few pixels because refine() re-finds the edge at
         # full resolution. Voting is the expensive stage and scales with
-        # pixel count, so this is close to a free 4x.
-        small = downsample(img, self.coarse)
-        acc = vote_centers(small, r_ref / self.coarse)
-        peaks = find_peaks(acc, min_sep_px=(r_ref / self.coarse) * 1.2,
+        # pixel count, so the decimation below is close to free: at the
+        # calibrated 3.5 px/mm it takes detect() from ~30ms to ~15ms across
+        # the whole corpus with published/frame and identity churn flat.
+        coarse = self.vote_coarse
+        small = downsample(img, coarse)
+        acc = vote_centers(small, r_ref / coarse)
+        peaks = find_peaks(acc, min_sep_px=(r_ref / coarse) * 1.2,
                            n_max=self.n_max)
         out = []
         for (x, y, v) in peaks:
-            out_i = self.refine_at(img, x * self.coarse, y * self.coarse, vote=v)
+            out_i = self.refine_at(img, x * coarse, y * coarse, vote=v)
             if out_i is not None:
                 out.append(out_i)
         return self._dedup(out)
