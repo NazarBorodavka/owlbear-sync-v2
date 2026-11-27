@@ -632,26 +632,48 @@ const PROJECTOR_RECT_KEY = "com.physicaltokentracker/projectorRect";
 // so it is right under either convention and cannot drift from it. The
 // lesson is narrower than "use the SDK": do not re-derive a transform
 // whose convention is not written down anywhere.
-// Viewport pixel size, cached. getWidth()/getHeight() describe the
-// Owlbear canvas, which changes only when the window is resized -- not
-// when the map is panned or zoomed -- so re-reading them on every rect
-// refresh cost a whole extra round trip for two numbers that are almost
-// always the same.
+// Viewport pixel size, cached and refreshed OFF the hot path.
+//
+// getWidth()/getHeight() describe the Owlbear canvas, which changes only
+// when the window is resized -- not when the map is panned or zoomed --
+// so reading them per refresh spent a whole round trip on two numbers
+// that are almost always unchanged.
+//
+// They cannot be folded into the same Promise.all as the corner
+// conversions below, because those DEPEND on them: asking where the
+// bottom-right corner is requires knowing where it is. So rather than
+// pay a serial hop, the size is never awaited in the steady state at
+// all -- the cached value is returned immediately and a refresh is
+// kicked off in the background. That holds the awaited cost at exactly
+// one parallel batch of two on every refresh, including the ones where
+// the cache has expired. Being up to VP_SIZE_TTL_MS out of date costs
+// nothing unless the window is resized, and then it self-corrects within
+// that window.
 let _vpSize = null;
 let _vpSizeAt = 0;
+let _vpSizeInFlight = false;
 const VP_SIZE_TTL_MS = 2000;
 
-async function viewportSize() {
-  const now = performance.now();
-  if (_vpSize && (now - _vpSizeAt) < VP_SIZE_TTL_MS) return _vpSize;
+async function fetchViewportSize() {
   const [w, h] = await Promise.all([
     OBR.viewport.getWidth(),
     OBR.viewport.getHeight(),
   ]);
   if (!(w > 0) || !(h > 0)) return null;
   _vpSize = { w, h };
-  _vpSizeAt = now;
+  _vpSizeAt = performance.now();
   return _vpSize;
+}
+
+function viewportSizeCached() {
+  const stale = !_vpSize || (performance.now() - _vpSizeAt) >= VP_SIZE_TTL_MS;
+  if (stale && !_vpSizeInFlight) {
+    _vpSizeInFlight = true;
+    fetchViewportSize()
+      .catch(() => {})
+      .finally(() => { _vpSizeInFlight = false; });
+  }
+  return _vpSize;      // null only until the very first fetch resolves
 }
 
 // The scene rectangle currently visible in THIS client's viewport,
@@ -668,13 +690,15 @@ async function viewportSize() {
 // lesson is narrower than "use the SDK": do not re-derive a transform
 // whose convention is not written down anywhere.
 //
-// One round trip, not two: the size comes from the cache above, so the
-// two corner conversions are the only thing awaited. Every await here is
+// One round trip, every time: the size comes from the cache above, so
+// the two corner conversions are the only thing awaited. Every await here is
 // a postMessage into the parent frame, and while the map is actively
 // being panned that frame is busy drawing -- so an extra serial hop
 // showed up directly as tokens lagging behind the map.
 async function visibleSceneRect() {
-  const size = await viewportSize();
+  // Only the first call ever awaits the size; after that it is served
+  // from cache and refreshed behind our back.
+  const size = viewportSizeCached() || await fetchViewportSize();
   if (!size) return null;
   const [tl, br] = await Promise.all([
     OBR.viewport.inverseTransformPoint({ x: 0, y: 0 }),

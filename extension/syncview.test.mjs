@@ -145,5 +145,54 @@ console.log(`  refresh rate: ${(1000/POLL_MS).toFixed(1)}Hz on the poll `
 check("the tick refreshes the rect at least 3x as often as the poll",
       (1000 / TICK_MS) >= 3 * (1000 / POLL_MS));
 
+// --- the rect refresh must cost ONE awaited batch, always -------------
+// The two corner conversions depend on the viewport size, so they cannot
+// share a Promise.all with it -- which is how a second SERIAL round trip
+// crept in and showed up as lag while panning. The size is therefore
+// served from cache and refreshed in the background, so the hot path is
+// one batch even on the refresh where the cache expires.
+console.log("");
+function makeRectReader({ ttlMs, hotPathAwaitsSize }) {
+  let size = null, sizeAt = -1e9, inFlight = false;
+  const trips = [];                     // awaited batches per call
+  let t = 0;
+  return {
+    trips,
+    call() {
+      t += 50;                          // one 50ms tick later
+      let batches = 0;
+      const stale = !size || (t - sizeAt) >= ttlMs;
+      if (stale) {
+        if (hotPathAwaitsSize) {
+          batches++;                    // serial hop, blocking
+          size = { w: 1920, h: 1080 }; sizeAt = t;
+        } else if (!inFlight) {
+          inFlight = true;              // background, not awaited
+          size = size || { w: 1920, h: 1080 };
+          sizeAt = t; inFlight = false;
+        }
+      }
+      batches++;                        // the two corner conversions
+      trips.push(batches);
+    },
+  };
+}
+const blocking = makeRectReader({ ttlMs: 2000, hotPathAwaitsSize: true });
+const background = makeRectReader({ ttlMs: 2000, hotPathAwaitsSize: false });
+for (let i = 0; i < 80; i++) { blocking.call(); background.call(); }  // 4s
+const worstBlocking = Math.max(...blocking.trips);
+const worstBackground = Math.max(...background.trips);
+console.log(`  80 ticks over 4s, 2s size TTL:`);
+console.log(`    size awaited in hot path: worst ${worstBlocking} batches, `
+          + `${blocking.trips.filter((n) => n > 1).length} slow ticks`);
+console.log(`    size refreshed behind it: worst ${worstBackground} batches, `
+          + `${background.trips.filter((n) => n > 1).length} slow ticks`);
+check("awaiting the size in the hot path costs 2 batches when it expires",
+      worstBlocking === 2);
+check("refreshing it in the background never costs more than 1 batch",
+      worstBackground === 1);
+check("...on every single tick, not just most of them",
+      background.trips.every((n) => n === 1));
+
 console.log(fail ? `\n  ${fail} FAILED` : "\n  all sync-view checks passed");
 process.exit(fail ? 1 : 0);
