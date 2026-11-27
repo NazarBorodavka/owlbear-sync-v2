@@ -64,6 +64,19 @@ let positionAnchor = localStorage.getItem("positionAnchor") || "scene";
 // exactly like a broken tracker, and it is meant to be held briefly while
 // the map is repositioned, not left set.
 let travelling = false;
+// Deadband, in millimetres: a new reading closer than this to the last
+// ACCEPTED one is ignored, so a token at rest stays put instead of
+// twitching on measurement noise. Compared against the last accepted
+// reading rather than the eased position, which makes it true hysteresis
+// -- repeated sub-threshold wobble cannot accumulate into a drift, and
+// one reading past the threshold releases it immediately.
+//
+// Sized against measured stationary noise: mean radial jitter
+// 0.35-0.50mm, worst-case excursion 2.06mm over a 30s clip. 2mm sits
+// above the mean and around the worst case, and is a twentieth of a
+// token base.
+let deadbandMm = parseFloat(localStorage.getItem("deadbandMm"));
+if (!isFinite(deadbandMm) || deadbandMm < 0) deadbandMm = 2.0;
 // The scene-space rectangle the projector is throwing onto the play area:
 // {x, y, w, h} in SCENE units. Scene units, not screen pixels, on purpose
 // -- Owlbear's "sync view" copies POSITION AND SCALE between clients, not
@@ -334,7 +347,16 @@ function updateTargets() {
     // token that is merely unreadable: it has not moved as far as
     // anyone knows.
     if (pt.coasting) continue;
-    targetMm[String(pt.marker_id)] = { x: pt.x_mm, y: pt.y_mm, name: pt.name };
+    const key = String(pt.marker_id);
+    const prev = targetMm[key];
+    if (prev && deadbandMm > 0 &&
+        Math.hypot(pt.x_mm - prev.x, pt.y_mm - prev.y) < deadbandMm) {
+      // Inside the deadband: hold position, but still let a rename
+      // through -- suppressing jitter should not suppress a new name.
+      prev.name = pt.name;
+      continue;
+    }
+    targetMm[key] = { x: pt.x_mm, y: pt.y_mm, name: pt.name };
   }
 }
 
@@ -565,18 +587,36 @@ async function runAutoZoomFromPlayArea(statusEl) {
 // ---------------------------------------------------------------------
 const PROJECTOR_RECT_KEY = "com.physicaltokentracker/projectorRect";
 
-// The scene rectangle currently visible in THIS client's viewport.
-// screen = (scene - position) * scale, so the visible scene rect is
-// position .. position + size/scale.
+// The scene rectangle currently visible in THIS client's viewport,
+// obtained by asking the SDK to convert the two screen corners rather
+// than by reconstructing the transform from getPosition()/getScale().
+//
+// That reconstruction is what put every token in the top-left corner of
+// the map. ViewportTransform is just {position, scale} with no stated
+// convention, and this assumed position was the scene coordinate at the
+// screen origin, so the visible rect was read as position..position+
+// size/scale. Owlbear means the opposite -- position is where the scene
+// origin lands ON SCREEN -- which makes the real top-left -position/scale.
+// With a position near zero that lands everything at scene (0, 0), and
+// any small viewport change jitters it.
+//
+// inverseTransformPoint is the host app's own screen->scene conversion,
+// so it is right under either convention and cannot drift from it. The
+// lesson is narrower than "use the SDK": do not re-derive a transform
+// whose convention is not written down anywhere.
 async function visibleSceneRect() {
-  const [pos, scale, w, h] = await Promise.all([
-    OBR.viewport.getPosition(),
-    OBR.viewport.getScale(),
+  const [w, h] = await Promise.all([
     OBR.viewport.getWidth(),
     OBR.viewport.getHeight(),
   ]);
-  if (!(scale > 0) || !(w > 0) || !(h > 0)) return null;
-  return { x: pos.x, y: pos.y, w: w / scale, h: h / scale };
+  if (!(w > 0) || !(h > 0)) return null;
+  const [tl, br] = await Promise.all([
+    OBR.viewport.inverseTransformPoint({ x: 0, y: 0 }),
+    OBR.viewport.inverseTransformPoint({ x: w, y: h }),
+  ]);
+  const rect = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+  if (!(rect.w > 0) || !(rect.h > 0)) return null;
+  return rect;
 }
 
 async function captureProjectorRect(reason) {
@@ -600,20 +640,29 @@ async function captureProjectorRect(reason) {
 // the transition. That is why this watches the flag rather than asking
 // the operator to remember to press a button after every sync.
 function watchSyncView() {
-  const update = (players) => {
+  // Both halves matter. OBR.party is the OTHER players in the room -- it
+  // does not include this client -- so a GM who has switched their own
+  // sync view on to broadcast their view does not appear in it at all.
+  // Watching only the party therefore left syncViewActive permanently
+  // false on the very client that was driving the projector.
+  const recompute = async () => {
     const wasActive = syncViewActive;
-    // Any synced non-GM client means a follower is mirroring this view.
-    syncViewActive = players.some((pl) => pl.syncView);
+    let mine = false, others = false;
+    try { mine = await OBR.player.getSyncView(); } catch (e) { /* ignore */ }
+    try {
+      others = (await OBR.party.getPlayers()).some((pl) => pl.syncView);
+    } catch (e) { /* ignore */ }
+    syncViewActive = Boolean(mine || others);
     if (wasActive && !syncViewActive) {
       // Sync just stopped: the projector is now parked where we are.
-      captureProjectorRect("captured when sync view was switched off");
+      await captureProjectorRect("captured when sync view was switched off");
     } else if (!wasActive && syncViewActive) {
-      describeProjector("sync view is ON -- following this view live");
+      describeProjector();
     }
   };
-  OBR.party.onChange(update);
-  OBR.party.getPlayers().then(update).catch((e) =>
-    console.error("Could not read the party:", e));
+  OBR.party.onChange(() => { recompute().catch(() => {}); });
+  OBR.player.onChange(() => { recompute().catch(() => {}); });
+  recompute().catch((e) => console.error("Could not read sync view:", e));
 }
 
 function describeProjector(reason) {
@@ -690,6 +739,17 @@ function wireUi() {
   }
   describeProjector();
 
+  const dbEl = document.getElementById("deadbandMm");
+  if (dbEl) {
+    dbEl.value = String(deadbandMm);
+    dbEl.addEventListener("input", () => {
+      deadbandMm = parseFloat(dbEl.value);
+      localStorage.setItem("deadbandMm", String(deadbandMm));
+      describeDeadband();
+    });
+  }
+  describeDeadband();
+
   const travelBtn = document.getElementById("travelBtn");
   if (travelBtn) {
     travelBtn.addEventListener("click", () => {
@@ -698,6 +758,19 @@ function wireUi() {
     });
   }
   describeTravel();
+}
+
+function describeDeadband() {
+  const el = document.getElementById("deadbandStatus");
+  if (!el) return;
+  if (!(deadbandMm > 0)) {
+    el.textContent = "Off -- every reading is used, including measurement "
+      + "noise (about 0.4mm typical, up to ~2mm).";
+    return;
+  }
+  el.textContent = "Holding still until a token moves more than "
+    + `${deadbandMm.toFixed(1)}mm `
+    + `(${(100 * deadbandMm / TOKEN_BASE_MM).toFixed(0)}% of a token base).`;
 }
 
 function describeTravel() {

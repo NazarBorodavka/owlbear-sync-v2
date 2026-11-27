@@ -147,6 +147,27 @@
   </section>
 
   <section class="panel">
+    <h3>Position Stability</h3>
+    <p class="hint">
+      How far a token has to move before the map is updated.
+    </p>
+    <label>Hold still within (mm)</label>
+    <input id="deadbandMm" type="range" min="0" max="10" step="0.5" />
+    <p class="what">
+      The camera measures each token to about 0.4mm typically, with
+      occasional excursions up to ~2mm, so a token sitting untouched still
+      twitches slightly. Anything under this threshold is treated as the
+      token not having moved, measured against the last position actually
+      accepted -- so small wobble cannot slowly accumulate into a drift,
+      and one real movement past the threshold releases it immediately.
+      <b>2mm</b> is a good default: above the usual noise, and a twentieth
+      of a token base. Set it to 0 to use every reading. Remembered in
+      this browser.
+    </p>
+    <p id="deadbandStatus" class="hint"></p>
+  </section>
+
+  <section class="panel">
     <h3>Pause Position Sync</h3>
     <p class="hint">
       Stops writing token positions to the scene. Everything stays where

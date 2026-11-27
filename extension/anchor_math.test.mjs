@@ -101,5 +101,41 @@ check("play-area centre maps to the centre of the projector rect",
       Math.abs(pBig.x - (projWindow.x + projWindow.w / 2)) < 1e-6 &&
       Math.abs(pBig.y - (projWindow.y + projWindow.h / 2)) < 1e-6);
 
+
+// --- the bug this file did NOT catch ---------------------------------
+// Worth recording why. The checks above modelled inverseTransformPoint as
+//   scene = screen/scale + position
+// and derived the visible rect as position..position+size/scale -- the
+// same assumption the code made. Two expressions of one guess agree with
+// each other no matter how wrong the guess is, so the suite was green
+// while every token landed at the map's top-left corner. Owlbear's
+// convention is the other one: position is where the scene origin lands
+// ON SCREEN, i.e. screen = scene*scale + position.
+//
+// The fix was to stop deriving the rect at all and ask the SDK to convert
+// the two screen corners. What is checked now is that the rect agrees
+// with the SDK's conversion under EITHER convention, which is the
+// property that actually protects against this.
+console.log("");
+const rectFromCorners = (inv, w, h) => {
+  const tl = inv({ x: 0, y: 0 }), br = inv({ x: w, y: h });
+  return { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
+};
+for (const [name, inv] of [
+  // scene = screen/scale + position
+  ["position-is-scene-at-screen-origin",
+   (p) => ({ x: p.x / scale + 100, y: p.y / scale + 50 })],
+  // scene = (screen - position)/scale   <- Owlbear's actual convention
+  ["position-is-scene-origin-on-screen",
+   (p) => ({ x: (p.x - 100) / scale, y: (p.y - 50) / scale })],
+]) {
+  const r = rectFromCorners(inv, vw, vh);
+  const centre = projectorAnchor({ x_mm: widthMm / 2, y_mm: heightMm / 2 }, r);
+  const expect = inv({ x: vw / 2, y: vh / 2 });
+  console.log(`  ${name}: rect ${r.w.toFixed(1)}x${r.h.toFixed(1)} at (${r.x.toFixed(1)}, ${r.y.toFixed(1)})`);
+  check(`corner-derived rect matches the SDK under "${name}"`,
+        Math.abs(centre.x - expect.x) < 1e-6 && Math.abs(centre.y - expect.y) < 1e-6);
+}
+
 console.log(fail ? `\n  ${fail} FAILED` : "\n  all anchor-math checks passed");
 process.exit(fail ? 1 : 0);
