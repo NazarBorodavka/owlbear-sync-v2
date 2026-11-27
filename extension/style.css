@@ -85,3 +85,25 @@ button:hover { background: #5a7fe4; }
   margin-top: 0;
   flex: 1;
 }
+
+/* Per-control explanation, sitting directly under the thing it
+   describes. Distinct from .hint (which introduces a whole panel) so
+   that "what does this button do" is answerable by looking at the
+   button, not by reading the panel's preamble. */
+.what {
+  color: #7a7a86;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 4px 0 2px 0;
+  padding-left: 8px;
+  border-left: 2px solid #3a3a44;
+}
+.what b { color: #9a9aa5; }
+.what.warn { border-left-color: #6a6a3a; }
+.radio-row {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #c4c4ce;
+}
+.radio-row input { width: auto; margin-right: 6px; }

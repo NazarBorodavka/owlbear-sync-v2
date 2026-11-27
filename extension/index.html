@@ -7,97 +7,201 @@
 </head>
 <body>
   <div id="status" class="status ready">Loading...</div>
+  <p class="what">
+    <b>Status line (above).</b> Green while the camera is connected,
+    showing how many tokens are being read and the tracker's frame rate.
+    Yellow when the camera has dropped, or when position sync is paused.
+    Red when this panel cannot reach the tracker at all.
+  </p>
 
   <section class="panel">
     <h3>Tracker Connection</h3>
+
     <label>Tracker URL</label>
     <input id="trackerUrl" type="text" placeholder="http://192.168.1.50:5000" />
+    <p class="what">
+      Where the tracker's web service is, including the port. The same
+      address you open its dashboard on. Remembered in this browser.
+    </p>
+
     <label>Auth (user:password)</label>
     <input id="trackerAuth" type="text" placeholder="admin:admin" />
+    <p class="what">
+      The tracker dashboard's login, as one <code>user:password</code>
+      string. Remembered in this browser, so it should already be filled
+      in on a later session.
+    </p>
+
     <button id="connectBtn">Connect</button>
+    <p class="what">
+      Saves both fields and starts polling the tracker. Press it again
+      after changing either one. Polling continues on its own from then
+      on -- there is nothing to keep pressing.
+    </p>
   </section>
 
   <section class="panel">
     <h3>Map Auto-Zoom</h3>
     <p class="hint">
-      Sets the zoom so one grid square is one token base (40mm) on the
-      table. Use <b>from play-area size</b>: it needs nothing but the
-      calibration you already have.
+      Both buttons set the map zoom so that one grid square measures one
+      token base (40mm) on the table. Neither moves the map -- only the
+      zoom level.
     </p>
+
     <button id="autoZoomCalcBtn">Auto-Zoom (from play-area size)</button>
-    <p class="hint">
-      The option below measures the projected grid through the camera
-      instead. It does not work with the near-IR bandpass filter fitted
-      -- the filter's whole job is to make projector light invisible to
-      the camera, so there is no grid left for it to find. Kept only for
-      a setup without the filter.
+    <p class="what">
+      <b>Use this one.</b> Works out the zoom arithmetically from the
+      play-area size you calibrated in the tracker, the window size and
+      the grid setting. Needs no camera and nothing on the table. It also
+      checks its own assumption -- that the projected image fills the
+      calibrated play area -- and warns you if the two axes disagree,
+      which would mean the projector is not lined up with the play area.
     </p>
+
     <button id="autoZoomBtn">Auto-Zoom (measure projected grid, needs no IR filter)</button>
+    <p class="what warn">
+      Measures Owlbear's grid overlay <i>through the camera</i> instead.
+      <b>This cannot work with the near-IR filter fitted</b> -- that
+      filter exists to make projector light invisible to the camera, so
+      there is no grid left for it to find, and it will report "no grid
+      pattern found". Kept only for a setup without the filter.
+    </p>
+
     <p id="autoZoomStatus" class="hint"></p>
   </section>
 
   <section class="panel">
     <h3>Position Anchor</h3>
     <p class="hint">
-      What a physical token's millimetre position is measured against.
+      What a token's measured millimetres are placed <i>relative to</i>.
+      This is the setting that decides what happens to tokens when the
+      map moves. It is stored per machine, not in the scene, because it
+      describes which screen this computer is driving.
     </p>
-    <label>
-      <input type="radio" name="anchor" id="anchorScene" value="scene" />
-      <b>Map (scene coordinates)</b> -- play-area origin is the map
-      origin. Every client agrees on where a token is, and panning the
-      map carries the tokens with it. Physical alignment holds only while
-      the projecting view sits at its calibrated home position.
-    </label>
-    <label>
+
+    <label class="radio-row">
       <input type="radio" name="anchor" id="anchorProjector" value="projector" />
-      <b>Projector view</b> -- the usual choice. A token is placed where
-      it physically sits on the table as seen <i>on the projector</i>, so
-      minis and their tokens stay aligned no matter where you look. While
+      <b>Projector view</b> &mdash; recommended
+    </label>
+    <p class="what">
+      Places a token where its mini physically sits, as seen
+      <i>on the projector</i>. Minis and tokens stay aligned no matter
+      where you personally look, so you can pan and zoom your own view
+      freely to scout ahead without anything on the table moving. While
       Owlbear's sync view is on, the projector mirrors you and this
-      tracks it live; when you switch sync off, the projector freezes and
-      so does this, at exactly the view that was being shown.
+      follows it live; switch sync off and both freeze on the view that
+      was showing.
+    </p>
+
+    <label class="radio-row">
+      <input type="radio" name="anchor" id="anchorScene" value="scene" />
+      <b>Map (scene coordinates)</b>
     </label>
-    <label>
+    <p class="what">
+      Treats the play-area origin as the map's own origin. Every client
+      agrees on where a token is and nothing moves when anyone pans, but
+      the minis only line up with the map while the projecting view sits
+      exactly at its calibrated home position. Useful if you are not
+      projecting at all.
+    </p>
+
+    <label class="radio-row">
       <input type="radio" name="anchor" id="anchorViewport" value="viewport" />
-      <b>This screen (viewport)</b> -- same idea but against
-      <i>your own</i> live view, whatever it is showing.
+      <b>This screen (viewport)</b>
     </label>
+    <p class="what">
+      Same as projector anchoring, but against <i>your own</i> live view
+      rather than the projector's. Tokens follow whatever you are looking
+      at, which means panning your view drags them across the map. Mainly
+      useful when this panel is open on the projector machine itself.
+    </p>
+
     <p id="anchorStatus" class="hint"></p>
-    <p class="hint">
-      Only ONE client should push positions -- two will fight over the
-      same items.
+    <p class="what warn">
+      Only <b>one</b> client should have this panel pushing positions.
+      Two will fight over the same tokens.
     </p>
   </section>
 
   <section class="panel">
     <h3>Projector View</h3>
     <p class="hint">
-      What rectangle of the map the projector is throwing onto the table.
-      Captured automatically whenever you switch Owlbear's sync view
-      <i>off</i>, since that is the moment the projector stops following
-      you and parks on the view it was showing. Press below to set it by
-      hand instead.
+      Which rectangle of the map the projector is throwing onto the
+      table. Only used by <b>Projector view</b> anchoring above.
     </p>
+
     <button id="pinProjectorBtn">Pin current view as the projector view</button>
+    <p class="what">
+      Stores what you are looking at right now as the projector's view.
+      Normally unnecessary: it is captured automatically whenever you
+      switch Owlbear's sync view <i>off</i>, which is the moment the
+      projector stops following you and parks on what it was showing.
+      Press this if you aligned the projector some other way, or if the
+      stored view looks wrong. For an exact fit, press it from the
+      projector machine -- sync view copies position and zoom between
+      clients but not window size, so a differently-sized window covers a
+      slightly different area. Stored in the scene, so it survives a
+      reload.
+    </p>
+
     <p id="projectorStatus" class="hint"></p>
   </section>
 
   <section class="panel">
-    <h3>Travel Mode</h3>
+    <h3>Pause Position Sync</h3>
     <p class="hint">
-      Pan or zoom the map without the minis "walking" across it. While
-      travelling, token positions stop being pushed to the scene, so
-      sliding the map under stationary minis cannot drag them through
-      unexplored ground. Turn it off once the new area is in place.
+      Stops writing token positions to the scene. Everything stays where
+      it currently is until you switch it back off.
     </p>
-    <button id="travelBtn">Start travelling</button>
+
+    <button id="travelBtn">Pause position sync</button>
+    <p class="what">
+      <b>You probably do not need this.</b> With <b>Projector view</b>
+      anchoring and sync view off, panning your own view already moves
+      nothing on the table, and the one jump when you press Sync View
+      puts every token straight at its correct new spot. No pausing
+      required.
+      <br /><br />
+      It earns its place in two cases. If you leave <b>sync view on
+      permanently</b>, the projector follows your every pan, so tokens
+      slide across the map the whole time you are moving it -- pause
+      first, move, then resume. The same applies to <b>This screen</b>
+      anchoring, which tracks your live view by definition. In
+      <b>Map</b> anchoring it does nothing useful, since panning never
+      moves tokens there anyway.
+      <br /><br />
+      Not remembered between reloads: left switched on, it would look
+      exactly like a broken tracker.
+    </p>
+
     <p id="travelStatus" class="hint"></p>
   </section>
 
   <section class="panel">
     <h3>Token Mapping</h3>
-    <p class="hint">Persists with this scene -- no need to redo it next session.</p>
+    <p class="hint">
+      Which physical marker drives which token in the scene.
+    </p>
+    <p class="what">
+      One row per marker the camera can currently see, named from the
+      tracker dashboard if you have named it there. Pick the scene token
+      each one should move. A marker whose name already matches a token
+      in the scene is paired up automatically; that never overrides a
+      choice you made by hand. Deleting a token from the scene clears its
+      row. Saved into the scene itself, so it travels with the scene file
+      and does not need redoing next session.
+    </p>
     <div id="mappingList"></div>
+  </section>
+
+  <section class="panel">
+    <h3>Not here</h3>
+    <p class="what">
+      Camera setup, lens and play-area calibration, detector thresholds,
+      the live video feed and the per-stage timing readout all live in
+      the <b>tracker dashboard</b> at the URL above, not in this panel.
+      This panel only decides how tracked positions become scene tokens.
+    </p>
   </section>
 
   <script type="module" src="main.js"></script>

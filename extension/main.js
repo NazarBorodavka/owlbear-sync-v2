@@ -650,7 +650,7 @@ function setStatus(text, cls) {
   // Remembered so Travel Mode can take over the status line and then
   // hand it back, instead of leaving a stale "Travelling" banner up.
   if (!travelling) { lastStatusText = text; lastStatusClass = cls; }
-  if (travelling) { text = "Travelling (position sync paused)"; cls = "warn"; }
+  if (travelling) { text = "Position sync PAUSED"; cls = "warn"; }
   const el = document.getElementById("status");
   if (el) {
     el.textContent = text;
@@ -711,15 +711,18 @@ function wireUi() {
 function describeTravel() {
   const btn = document.getElementById("travelBtn");
   const st = document.getElementById("travelStatus");
-  if (btn) btn.textContent = travelling ? "Stop travelling" : "Start travelling";
+  if (btn) {
+    btn.textContent = travelling
+      ? "Resume position sync" : "Pause position sync";
+  }
   if (st) {
     st.textContent = travelling
-      ? "TRAVELLING -- token positions are NOT being pushed. Move the map "
-        + "freely, then stop travelling to resume."
-      : "Not travelling -- token positions are being pushed to the scene.";
+      ? "PAUSED -- nothing is being written to the scene. Move the map "
+        + "however you like, then resume."
+      : "Running -- token positions are being written to the scene.";
   }
   setStatus(
-    travelling ? "Travelling (position sync paused)" : lastStatusText,
+    travelling ? "Position sync PAUSED" : lastStatusText,
     travelling ? "warn" : lastStatusClass);
 }
 
