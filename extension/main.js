@@ -368,9 +368,29 @@ function updateTargets() {
   }
 }
 
+// Guards the live rect refresh below. While the map is being panned the
+// parent frame is busy, so a round trip can take longer than the tick
+// interval; without this, ticks would queue refreshes faster than they
+// complete and fall further and further behind.
+let _rectRefreshInFlight = false;
+
 async function pushTick() {
   if (travelling) return;          // see Travel Mode
   if (!anchorCtx) return;
+
+  // While sync view is on, the projector IS this view, so the rect has to
+  // keep up with the pan rather than with the tracker poll. Refreshing it
+  // only once per 150ms poll made following a moving map visibly choppy.
+  // This runs at tick rate instead, and is the only SDK read in the hot
+  // path.
+  if (anchorCtx.mode === "projector" && syncViewActive
+      && !_rectRefreshInFlight) {
+    _rectRefreshInFlight = true;
+    visibleSceneRect()
+      .then((r) => { if (r) { anchorCtx.rect = r; projectorRect = r; } })
+      .catch(() => {})
+      .finally(() => { _rectRefreshInFlight = false; });
+  }
 
   const now = performance.now();
   const dt = lastPushAt ? Math.min((now - lastPushAt) / 1000, 0.5) : 0;
@@ -612,15 +632,53 @@ const PROJECTOR_RECT_KEY = "com.physicaltokentracker/projectorRect";
 // so it is right under either convention and cannot drift from it. The
 // lesson is narrower than "use the SDK": do not re-derive a transform
 // whose convention is not written down anywhere.
-async function visibleSceneRect() {
+// Viewport pixel size, cached. getWidth()/getHeight() describe the
+// Owlbear canvas, which changes only when the window is resized -- not
+// when the map is panned or zoomed -- so re-reading them on every rect
+// refresh cost a whole extra round trip for two numbers that are almost
+// always the same.
+let _vpSize = null;
+let _vpSizeAt = 0;
+const VP_SIZE_TTL_MS = 2000;
+
+async function viewportSize() {
+  const now = performance.now();
+  if (_vpSize && (now - _vpSizeAt) < VP_SIZE_TTL_MS) return _vpSize;
   const [w, h] = await Promise.all([
     OBR.viewport.getWidth(),
     OBR.viewport.getHeight(),
   ]);
   if (!(w > 0) || !(h > 0)) return null;
+  _vpSize = { w, h };
+  _vpSizeAt = now;
+  return _vpSize;
+}
+
+// The scene rectangle currently visible in THIS client's viewport,
+// obtained by asking the SDK to convert the two screen corners rather
+// than by reconstructing the transform from getPosition()/getScale().
+//
+// That reconstruction is what put every token in the top-left corner of
+// the map. ViewportTransform is just {position, scale} with no stated
+// convention, and this assumed position was the scene coordinate at the
+// screen origin. Owlbear means the opposite -- position is where the
+// scene origin lands ON SCREEN -- which makes the real top-left
+// -position/scale. inverseTransformPoint is the host app's own
+// screen->scene conversion, so it is right under either convention. The
+// lesson is narrower than "use the SDK": do not re-derive a transform
+// whose convention is not written down anywhere.
+//
+// One round trip, not two: the size comes from the cache above, so the
+// two corner conversions are the only thing awaited. Every await here is
+// a postMessage into the parent frame, and while the map is actively
+// being panned that frame is busy drawing -- so an extra serial hop
+// showed up directly as tokens lagging behind the map.
+async function visibleSceneRect() {
+  const size = await viewportSize();
+  if (!size) return null;
   const [tl, br] = await Promise.all([
     OBR.viewport.inverseTransformPoint({ x: 0, y: 0 }),
-    OBR.viewport.inverseTransformPoint({ x: w, y: h }),
+    OBR.viewport.inverseTransformPoint({ x: size.w, y: size.h }),
   ]);
   const rect = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
   if (!(rect.w > 0) || !(rect.h > 0)) return null;
@@ -707,10 +765,13 @@ function watchSyncView() {
 // this view, then stop following and stay there -- and it is also exactly
 // the manual sequence that was already known to work.
 //
-// This exists because Owlbear's own one-shot button may not touch the
-// syncView flag at all, and if it does not, no extension can observe it:
+// This exists because Owlbear's own one-shot Sync View button does NOT
+// touch the syncView flag -- confirmed by testing, after the SDK bundle
+// turned out to be a re-export stub that could not settle it either way.
+// It moves the projector while changing no state an extension can see:
 // there is no viewport event, and another client's viewport cannot be
-// read. Doing the sync here removes the guesswork.
+// read. So that button is unusable here no matter how the listeners are
+// written, and this is the supported one-shot path.
 const SYNC_SETTLE_MS = 400;
 
 async function syncProjectorToThisView(statusEl) {

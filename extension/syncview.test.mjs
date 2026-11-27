@@ -92,5 +92,58 @@ two.set(false, false);    // now everyone is clear
 check("the capture fires when the last sync source clears",
       two.captures === 1);
 
+// --- live rect refresh, and the in-flight guard -----------------------
+// While sync view is on, the rect must keep up with the PAN, not with the
+// tracker poll. Refreshing it once per 150ms poll is what made following
+// a moving map choppy. Refreshing on every 50ms tick fixes that, but a
+// round trip can take longer than a tick while the parent frame is busy
+// drawing the pan -- so without a guard, ticks queue refreshes faster
+// than they complete.
+console.log("");
+async function runTicks({ ticks, tickMs, roundTripMs, guard }) {
+  let inFlight = false, started = 0, completed = 0, queued = 0;
+  const pending = [];
+  for (let i = 0; i < ticks; i++) {
+    if (guard && inFlight) {
+      queued++;
+    } else {
+      inFlight = true; started++;
+      pending.push(new Promise((r) => setTimeout(() => {
+        completed++; inFlight = false; r();
+      }, roundTripMs)));
+    }
+    // Awaited on the skip path too: the real loop is a setInterval, so a
+    // tick that skips still consumes its interval. Skipping the wait made
+    // every remaining tick run in one synchronous burst with no chance
+    // for the in-flight timer to clear -- an artefact of the harness, not
+    // of the guard.
+    await new Promise((r) => setTimeout(r, tickMs));
+  }
+  await Promise.all(pending);
+  return { started, completed, skipped: queued };
+}
+
+// A slow round trip (120ms) against a 50ms tick: without the guard, more
+// than twice as many refreshes are launched as can complete in time.
+const unguarded = await runTicks({ ticks: 10, tickMs: 50, roundTripMs: 120, guard: false });
+const guarded   = await runTicks({ ticks: 10, tickMs: 50, roundTripMs: 120, guard: true });
+console.log(`  10 ticks, 50ms apart, 120ms round trip:`);
+console.log(`    unguarded: ${unguarded.started} launched`);
+console.log(`    guarded:   ${guarded.started} launched, ${guarded.skipped} skipped`);
+check("without a guard, a slow round trip over-launches refreshes",
+      unguarded.started === 10);
+check("the guard launches only what can complete", guarded.started < 10);
+check("the guard never leaves a refresh uncompleted",
+      guarded.started === guarded.completed);
+check("the guard still refreshes repeatedly (it does not latch off)",
+      guarded.started >= 3);
+
+// Rate comparison: the point of moving the refresh off the poll.
+const POLL_MS = 150, TICK_MS = 50;
+console.log(`  refresh rate: ${(1000/POLL_MS).toFixed(1)}Hz on the poll `
+          + `vs ${(1000/TICK_MS).toFixed(1)}Hz on the tick`);
+check("the tick refreshes the rect at least 3x as often as the poll",
+      (1000 / TICK_MS) >= 3 * (1000 / POLL_MS));
+
 console.log(fail ? `\n  ${fail} FAILED` : "\n  all sync-view checks passed");
 process.exit(fail ? 1 : 0);

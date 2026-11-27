@@ -105,18 +105,24 @@
       <summary>What this is</summary>
       <p>Which rectangle of the map the projector throws onto the table.
       Only used by <b>Projector view</b> anchoring.</p>
-      <p>Captured automatically: kept up to date the whole time Owlbear's
-      sync view is on, and retained when you switch sync off &mdash; the
-      moment the projector stops following you and parks on what it was
-      showing. Stored in the scene, so it survives a reload.</p>
-      <p><b>Sync projector to this view</b> does a one-shot sync from
-      here: the projector jumps to what you are looking at, stops
-      following, and this calibration is updated in the same step. Use it
-      instead of Owlbear's own one-shot Sync View button, which may not
-      announce itself to extensions at all &mdash; if it does not, the
-      projector moves while this calibration silently keeps pointing at
-      the old view. Owlbear's persistent sync <i>toggle</i> is always
-      detected correctly.</p>
+      <p>There are two ways to move the projector, and both keep this
+      calibration correct:</p>
+      <p><b>Sync projector to this view</b> (above) &mdash; a one-shot
+      jump. The projector goes to what you are looking at, stops
+      following, and the calibration updates in the same step. Best for
+      relocating the party.</p>
+      <p>Owlbear's persistent sync <b>toggle</b> &mdash; while it is on
+      the projector mirrors you continuously and this tracks it live;
+      switch it off and both freeze on that view. Stored in the scene, so
+      it survives a reload.</p>
+      <p class="caution">Owlbear's own one-shot <b>Sync View</b> button
+      does not work with this. It moves the projector without changing
+      any state an extension can see &mdash; there is no viewport event,
+      and another client's viewport cannot be read &mdash; so the
+      projector jumps while this calibration silently keeps pointing at
+      the old view, and tokens land in the wrong place. Use the button
+      above instead; it does the same thing and keeps the two in
+      step.</p>
       <p class="caution">Sync view copies position and zoom between
       clients but not window size, so if the projector window is a
       different pixel size from this one it covers a slightly different
