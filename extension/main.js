@@ -286,6 +286,14 @@ async function refreshAnchorContext() {
       // live; otherwise use the rect frozen when sync stopped.
       const rect = syncViewActive ? await visibleSceneRect() : projectorRect;
       if (!rect) { anchorCtx = null; return; }
+      if (syncViewActive) {
+        // Keep the stored rect current the whole time sync is live, so
+        // that turning sync off leaves a usable calibration behind
+        // whether or not the off-transition event is seen. Writing it to
+        // scene metadata is left to that transition -- persisting at poll
+        // rate would be a scene write several times a second.
+        projectorRect = rect;
+      }
       anchorCtx = { mode: "projector", widthMm, heightMm, rect };
     } else if (positionAnchor === "viewport") {
       const [w, h] = await Promise.all([
@@ -553,8 +561,8 @@ async function runAutoZoomFromPlayArea(statusEl) {
     } catch (e) { /* best effort */ }
     describeProjector();
     rectNote = " The stored projector view was captured at the old zoom "
-      + "and has been cleared -- re-pin it (or toggle sync view) before "
-      + "using Projector view anchoring.";
+      + "and has been cleared -- switch sync view on once to recapture "
+      + "it at the new zoom.";
   }
 
   // Reported PER AXIS on purpose. (dpi * newScale) / pxPerMm would just
@@ -674,9 +682,8 @@ function describeProjector(reason) {
     return;
   }
   if (!projectorRect) {
-    el.textContent = "No projector view stored yet. Line the map up on the "
-      + "projector, then press the button above (or toggle Owlbear's sync "
-      + "view off while it is aligned).";
+    el.textContent = "No projector view stored yet -- switch Owlbear's sync "
+      + "view on once and it is captured automatically.";
     return;
   }
   const r = projectorRect;
@@ -727,16 +734,6 @@ function wireUi() {
   }
   describeAnchor();
 
-  const pinBtn = document.getElementById("pinProjectorBtn");
-  if (pinBtn) {
-    pinBtn.addEventListener("click", async () => {
-      const ok = await captureProjectorRect("pinned by hand");
-      if (!ok) {
-        const el = document.getElementById("projectorStatus");
-        if (el) el.textContent = "Could not read the viewport -- is a scene open?";
-      }
-    });
-  }
   describeProjector();
 
   const dbEl = document.getElementById("deadbandMm");
@@ -749,6 +746,19 @@ function wireUi() {
     });
   }
   describeDeadband();
+
+  // One switch for all the explanations, so "what does everything here
+  // do" does not mean opening eight disclosures by hand -- and the
+  // default stays compact, which is the point of collapsing them.
+  const helpBtn = document.getElementById("helpToggle");
+  if (helpBtn) {
+    helpBtn.addEventListener("click", () => {
+      const all = [...document.querySelectorAll("details.what")];
+      const anyClosed = all.some((d) => !d.open);
+      for (const d of all) d.open = anyClosed;
+      helpBtn.textContent = anyClosed ? "Hide all help" : "Show all help";
+    });
+  }
 
   const travelBtn = document.getElementById("travelBtn");
   if (travelBtn) {

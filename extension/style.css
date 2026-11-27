@@ -86,20 +86,60 @@ button:hover { background: #5a7fe4; }
   flex: 1;
 }
 
-/* Per-control explanation, sitting directly under the thing it
-   describes. Distinct from .hint (which introduces a whole panel) so
-   that "what does this button do" is answerable by looking at the
-   button, not by reading the panel's preamble. */
-.what {
+/* Help text, collapsed by default. <details> rather than a hover
+   tooltip on purpose: the explanations run to several sentences, hover
+   does not exist on a touch screen, and a tooltip cannot be left open
+   while you work the control it describes. */
+details.what {
+  margin-top: 8px;
+  border-top: 1px solid #32323c;
+  padding-top: 6px;
+}
+details.what > summary {
+  cursor: pointer;
   color: #7a7a86;
   font-size: 11px;
-  line-height: 1.45;
-  margin: 4px 0 2px 0;
-  padding-left: 8px;
+  list-style: none;
+  user-select: none;
+}
+details.what > summary::-webkit-details-marker { display: none; }
+details.what > summary::before {
+  content: "\25B8  ";
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+details.what[open] > summary::before { content: "\25BE  "; }
+details.what > summary:hover { color: #a4a4b0; }
+details.what p {
+  color: #8a8a95;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0 0 0;
+  padding-left: 10px;
   border-left: 2px solid #3a3a44;
 }
-.what b { color: #9a9aa5; }
-.what.warn { border-left-color: #6a6a3a; }
+details.what p.caution { border-left-color: #6a6a3a; }
+details.what b { color: #a4a4b0; }
+details.what code {
+  background: #1a1a20;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* Secondary action -- visually subordinate to the real buttons, so the
+   help toggle does not read as something you are meant to press to make
+   the tracker work. */
+button.ghost {
+  background: transparent;
+  border: 1px solid #3a3a44;
+  color: #8a8a95;
+  font-weight: 500;
+  margin-top: 0;
+  margin-bottom: 10px;
+  padding: 6px;
+}
+button.ghost:hover { background: #2a2a32; color: #c4c4ce; }
+
 .radio-row {
   display: block;
   margin-top: 8px;
@@ -107,3 +147,6 @@ button:hover { background: #5a7fe4; }
   color: #c4c4ce;
 }
 .radio-row input { width: auto; margin-right: 6px; }
+
+/* The range input needs no full-width box styling the text inputs use. */
+input[type="range"] { padding: 0; background: transparent; border: none; }
