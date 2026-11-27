@@ -435,53 +435,21 @@ function mmPerUnit(unit) {
 // ---------------------------------------------------------------------
 // Auto-zoom: align OBR's grid to the physical token's real base size
 // ---------------------------------------------------------------------
+// There used to be a second implementation here that measured the
+// projected grid through the camera (POST /api/grid/measure). It is gone:
+// the near-IR bandpass filter makes projector light invisible to the
+// camera by design, so there was no longer a grid for it to find, and it
+// could only ever report "no grid pattern found". The analytic version
+// below needs no camera at all.
 const TOKEN_BASE_MM = 40.0;   // physical base diameter -- keep in sync with
                                // tracker/vision/geometry.py's RingGeometry.base_d_mm
                                // (the PRINTED marker is 38mm; the physical base it
                                // sits on, which is what should visually match one
                                // grid cell, is 40mm)
 
-async function runAutoZoom(statusEl) {
-  statusEl.textContent = "Measuring projected grid...";
-  let measurement;
-  try {
-    measurement = await apiFetch("/api/grid/measure", { method: "POST" });
-  } catch (e) {
-    statusEl.textContent = `Auto-zoom failed: ${e.message}`;
-    return;
-  }
-
-  const currentScale = await OBR.viewport.getScale();
-  // If 1 cell currently measures measurement.mm_per_cell on the table,
-  // and we want 1 cell to measure TOKEN_BASE_MM, the viewport scale needs
-  // to change by that same ratio -- the DPI/grid-size relationship is
-  // linear in viewport scale, so no iteration or re-measurement loop is
-  // needed, one shot gets there directly.
-  const ratio = measurement.mm_per_cell / TOKEN_BASE_MM;
-  const newScale = currentScale * ratio;
-  await OBR.viewport.setScale(newScale);
-
-  // Persist as the scene's own "home" zoom, so it is restored automatically
-  // next session without re-measuring (the operator can always re-run this
-  // if the projector/camera setup changes).
-  await OBR.scene.setMetadata({
-    "com.physicaltokentracker/homeScale": newScale,
-  });
-
-  statusEl.textContent =
-    `Done: grid was ${measurement.mm_per_cell.toFixed(0)}mm/cell ` +
-    `(confidence ${(measurement.confidence * 100).toFixed(0)}%), ` +
-    `now ${TOKEN_BASE_MM}mm/cell to match the token base.`;
-}
-
 // Analytic auto-zoom: no camera measurement, from the play-area size.
 //
-// This is the one that works with the near-IR bandpass filter fitted.
-// runAutoZoom() above measures the projected grid IN THE CAMERA IMAGE,
-// which was fine when the camera could see the projector -- but the
-// filter exists precisely to make projector light invisible to it, so
-// that measurement now finds nothing to measure. The geometry is fully
-// determined without it:
+// The geometry is fully determined without any measurement:
 //
 //   the projector throws the whole OBR viewport onto the play area, so
 //     screen px per real mm  =  viewport px / play-area mm
@@ -541,19 +509,47 @@ async function runAutoZoomFromPlayArea(statusEl) {
   // under the table is a separate, deliberate action.
   try {
     await OBR.viewport.setScale(newScale);
-    await OBR.scene.setMetadata({
-      "com.physicaltokentracker/homeScale": newScale,
-    });
   } catch (e) {
     statusEl.textContent = `Auto-zoom could not apply the scale: ${e.message}`;
     return;
   }
 
-  const cellMm = (dpi * newScale) / pxPerMm;
+  // Changing the scale changes how much map the projector covers, so any
+  // projector rect captured at the OLD scale is now wrong -- it would
+  // place every token against an area the projector no longer shows.
+  // While sync view is on the projector is following this client, so the
+  // rect can simply be re-read; otherwise it has to be re-pinned, and
+  // saying so is better than leaving a silently stale calibration behind.
+  let rectNote = "";
+  if (syncViewActive) {
+    await captureProjectorRect("re-read after auto-zoom");
+    rectNote = " Projector view re-read at the new zoom.";
+  } else if (projectorRect) {
+    projectorRect = null;
+    try {
+      await OBR.scene.setMetadata({ [PROJECTOR_RECT_KEY]: undefined });
+    } catch (e) { /* best effort */ }
+    describeProjector();
+    rectNote = " The stored projector view was captured at the old zoom "
+      + "and has been cleared -- re-pin it (or toggle sync view) before "
+      + "using Projector view anchoring.";
+  }
+
+  // Reported PER AXIS on purpose. (dpi * newScale) / pxPerMm would just
+  // give TOKEN_BASE_MM back -- it is the equation above rearranged, so it
+  // would read as a confirmation while actually being an identity that
+  // holds no matter how wrong the inputs are. Against each axis's own
+  // px/mm it is a real measurement: the two differ by exactly the skew,
+  // so a reader can see what the single chosen scale actually achieves in
+  // each direction.
+  const cellMmX = (dpi * newScale) / pxPerMmX;
+  const cellMmY = (dpi * newScale) / pxPerMmY;
   let msg =
-    `Done: 1 cell is now ${cellMm.toFixed(1)}mm on the table ` +
-    `(target ${TOKEN_BASE_MM}mm). Play area ${widthMm}x${heightMm}mm ` +
-    `shown in a ${vw}x${vh}px viewport, grid dpi ${dpi}, scale ${newScale.toFixed(4)}.`;
+    `Done: 1 cell now measures ${cellMmX.toFixed(1)}mm across and ` +
+    `${cellMmY.toFixed(1)}mm down on the table (target ${TOKEN_BASE_MM}mm). ` +
+    `Play area ${widthMm}x${heightMm}mm shown in a ${vw}x${vh}px viewport, ` +
+    `grid dpi ${dpi}, scale ${newScale.toFixed(4)}.`
+    + rectNote;
   if (skew > 0.02) {
     msg +=
       ` WARNING: the two axes disagree by ${(100 * skew).toFixed(1)}% ` +
@@ -665,10 +661,6 @@ function wireUi() {
     localStorage.setItem("trackerUrl", trackerUrl);
     localStorage.setItem("trackerAuth", trackerAuth);
     if (trackerUrl) startPolling();
-  });
-
-  document.getElementById("autoZoomBtn").addEventListener("click", () => {
-    runAutoZoom(document.getElementById("autoZoomStatus"));
   });
 
   document.getElementById("autoZoomCalcBtn").addEventListener("click", () => {

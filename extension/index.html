@@ -43,28 +43,27 @@
   <section class="panel">
     <h3>Map Auto-Zoom</h3>
     <p class="hint">
-      Both buttons set the map zoom so that one grid square measures one
-      token base (40mm) on the table. Neither moves the map -- only the
-      zoom level.
+      Sets the map zoom so one grid square measures one token base (40mm)
+      on the table. Changes the zoom only -- it never moves the map.
     </p>
 
     <button id="autoZoomCalcBtn">Auto-Zoom (from play-area size)</button>
     <p class="what">
-      <b>Use this one.</b> Works out the zoom arithmetically from the
-      play-area size you calibrated in the tracker, the window size and
-      the grid setting. Needs no camera and nothing on the table. It also
-      checks its own assumption -- that the projected image fills the
-      calibrated play area -- and warns you if the two axes disagree,
-      which would mean the projector is not lined up with the play area.
+      Works the zoom out arithmetically from the play-area size you
+      calibrated in the tracker, this window's size and the scene's grid
+      setting. Needs no camera and nothing on the table. It also checks
+      its own assumption -- that the projected image fills the calibrated
+      play area -- and warns you if the two axes disagree, which would
+      mean the projector is not lined up with the play area. The result
+      line below reports the cell size actually achieved across and down
+      -- the two differ by the same skew, so you can see what the single
+      chosen zoom really does in each direction.
     </p>
-
-    <button id="autoZoomBtn">Auto-Zoom (measure projected grid, needs no IR filter)</button>
     <p class="what warn">
-      Measures Owlbear's grid overlay <i>through the camera</i> instead.
-      <b>This cannot work with the near-IR filter fitted</b> -- that
-      filter exists to make projector light invisible to the camera, so
-      there is no grid left for it to find, and it will report "no grid
-      pattern found". Kept only for a setup without the filter.
+      Changing the zoom changes how much map the projector covers, so the
+      stored <b>Projector view</b> no longer matches. If sync view is on
+      it is re-read automatically; if not, it is cleared and needs
+      re-pinning.
     </p>
 
     <p id="autoZoomStatus" class="hint"></p>
